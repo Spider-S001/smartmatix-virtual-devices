@@ -1,0 +1,31 @@
+{
+  "name": "smartmatix-virtual-devices",
+  "version": "1.0.0",
+  "description": "Ein Plugin zum Erstellen und Bearbeiten von virtuellen Geräten als Variablen.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "LOG_LEVEL=debug node src/index.js"
+  },
+  "keywords": [
+    "variables",
+    "variablen",
+    "virtuelle geräte",
+    "virtual devices",
+    "virtual",
+    "virtuell",
+    "homematicip",
+    "hcu",
+    "connect-api",
+    "smarthome"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "fs": "^0.0.1-security",
+    "uuid": "^11.1.0",
+    "ws": "^8.19.0"
+  }
+}
