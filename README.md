@@ -50,6 +50,13 @@ smartmatix-virtual-devices/
     ├── configStore.js                ← Persistenz für Konfiguration
     └── logger.js                     ← Konsolenlogger
 ```
+---
+
+### Plugin auf der HCU installieren (Für Endnutzer)
+
+HCUWeb öffnen → **Plugins** → `.tar.gz`-Datei hochladen.
+
+> Der Entwicklermodus muss aktiviert sein.
 
 ---
 
@@ -63,7 +70,7 @@ cd smartmatix-virtual-devices
 npm install
 ```
 
-### 2. Aktivierungsschlüssel erzeugen (Für Entwickler)
+### 2. Aktivierungsschlüssel erzeugen
 
 In der **HCUWeb** (`https://hcu-XXXX.local`) unter  
 `Einstellungen → Entwicklermodus → Aktivierungsschlüssel generieren`
@@ -97,7 +104,7 @@ LOG_LEVEL=debug node src/index.js de.smartmatix.plugin.virtual-devices hcu1-XXXX
 
 ---
 
-## Deployment auf der HCU (Für Entwickler)
+## Deployment auf der HCU
 
 ### 1. Docker-Image bauen
 
@@ -116,12 +123,6 @@ docker save smartmatix-virtual-devices:1.0.0 | gzip > smartmatix-virtual-devices
 ```bash
 docker save smartmatix-virtual-devices:1.0.0 -o smartmatix-virtual-devices-1.0.0.tar
 ```
-
-### 3. Auf der HCU installieren (Für Endnutzer)
-
-HCUWeb öffnen → **Plugins** → `.tar.gz`-Datei hochladen.
-
-> Der Entwicklermodus muss aktiviert sein.
 
 ---
 
