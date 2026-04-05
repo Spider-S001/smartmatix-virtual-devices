@@ -1,8 +1,12 @@
 # SmartMatix Virtual Devices
 
+![Das Plugin-Icon von SmartMatix Virtual Devices](/Screenshots/virtual-devices-plugin-icon.png "Plugin-Icon")
+
 Ein Plugin für die **Homematic IP Home Control Unit (HCU)**, das es ermöglicht, virtuelle Geräte als Variablen direkt in der HCU zu erstellen, zu konfigurieren und zu verwalten – ohne Cloud, vollständig lokal über die [Connect API 1.0.1](https://github.com/homematicip/connect-api).
 
 > Entwickelt von **Kevin Schipper** · Plugin-ID: `de.smartmatix.plugin.virtual-devices`
+
+![Die Einstellungs-Seite des Plugins in der Homematic IP HCU1](/Screenshots/Plugin-Settings.png "Übersicht über die Einstellungen des Plugins")
 
 ---
 
@@ -16,6 +20,8 @@ Ein Plugin für die **Homematic IP Home Control Unit (HCU)**, das es ermöglicht
 - **Persistenz** – alle Geräte und Einstellungen werden in `/data` gespeichert und überleben Plugin-Updates
 - **Automatische Wiederverbindung** – Exponential Backoff bei Verbindungsabbruch
 - **Gerät neu einbinden** – verlorene Geräte können über die `reincludeDevices`-Einstellung erneut an die HCU gemeldet werden
+
+![Die Auswahl der Gerätetypen im Plugin](/Screenshots/Geraeteauswahl.png "Die Auswahl der Gerätetypen im Plugin")
 
 ---
 
