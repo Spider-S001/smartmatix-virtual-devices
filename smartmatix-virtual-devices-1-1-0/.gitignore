@@ -1,6 +1,0 @@
-node_modules/
-authtoken.txt
-data/
-*.tar.gz
-*.tar
-.env
