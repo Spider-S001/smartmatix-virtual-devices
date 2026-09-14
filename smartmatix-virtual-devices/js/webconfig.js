@@ -31,11 +31,11 @@
     endpointId: T.labelEndpointId,
   };
 
-  // Die Seite laeuft unter der Kennung des Sammelzugangs, die Anfragen zu den
-  // Einstellungen gehen aber an den Endpunkt des gerade gewaehlten Geraets.
-  // Deshalb ist die Basis nicht fest, sondern wechselt mit dem Geraet.
-  const root  = window.location.pathname.replace(/\/$/, '');
-  let   base  = root;
+  // Die Seite laeuft unter der Kennung des Sammelzugangs (root); die
+  // Anfragen zu den Einstellungen gehen an den Endpunkt des gerade
+  // gewaehlten Geraets (base). Beide sind anfangs identisch.
+  const root    = window.location.pathname.replace(/\/$/, '');
+  let   base    = root;
   const hl      = (p) => base + p + '?hl=' + HL;
   const pwEl    = document.getElementById('pw');
   const btnEl   = document.getElementById('btn');
@@ -82,8 +82,8 @@
     token = (await res.json()).token;
     pwEl.value = '';
 
-    // Erst die Geraeteliste holen und ein Geraet waehlen; loadDevice() braucht
-    // eine Geraete-Kennung als Basis, die Seite selbst laeuft unter der Kennung des Sammelzugangs.
+    // Erst die Geraeteliste holen und ein Geraet waehlen; loadDevice()
+    // braucht eine Geraete-Kennung als Basis.
     showPanels(true);
     await loadDeviceList();
   });
@@ -99,7 +99,7 @@
     // Sitzung auch serverseitig verwerfen, damit der Token nicht bis zum Ablauf der Gueltigkeit weiterverwendet werden kann.
     if (usedToken) {
       try {
-        await fetch(root + '/session?hl=' + HL, {
+        await fetch(root + '/session', {
           method: 'DELETE',
           headers: { 'X-Endpoint-Token': usedToken },
         });
@@ -147,27 +147,24 @@
 
   }
 
-  // --- Zuordnung ---
-
-  let targets = [];
-  let rules   = [];
-
-  const rulesEl = document.getElementById('rules');
-  const msgEl   = document.getElementById('mapmsg');
-
-  function msg(text, ok) {
-    msgEl.textContent = text;
-    msgEl.className = ok ? 'ok' : 'bad';
+  /**
+   * Wechselt auf ein anderes Geraet: Basis-Adresse umstellen und alle
+   * Bereiche neu laden.
+   * @param {string} endpointId
+   */
+  async function selectDevice(endpointId) {
+    base = root.replace(/\/[^/]*$/, '') + '/' + endpointId;
+    await loadDevice();
+    await loadMapping();
   }
 
-  // --- Sammelseite: Geraeteauswahl ---
+  // --- Sammelseite: Geraeteauswahl ------------------------------------------
 
   const hubPickEl = document.getElementById('hubpick');
   const hubDevEl  = document.getElementById('hubdev');
 
   /**
    * Holt die Liste aller Geraete mit aktivem Endpunkt und waehlt das erste aus.
-   * Nur im Sammelmodus verfuegbar.
    */
   async function loadDeviceList() {
     let res;
@@ -198,22 +195,22 @@
     await selectDevice(list[0].endpointId);
   }
 
-  /**
-   * Wechselt auf ein anderes Geraet: Basis-Adresse umstellen und alle
-   * Bereiche neu laden.
-   *
-   * @param {string} endpointId
-   */
-  async function selectDevice(endpointId) {
-    // Die Seite laeuft unter der Kennung des Sammelzugangs; die Anfragen gehen an die Kennung des gewaehlten Geraets
-    base = root.replace(/\/[^/]*$/, '') + '/' + endpointId;
-    await loadDevice();
-    await loadMapping();
-  }
-
   hubDevEl.addEventListener('change', () => {
     selectDevice(hubDevEl.value).catch(() => err(MSG.network));
   });
+
+  // --- Zuordnung ---
+
+  let targets = [];
+  let rules   = [];
+
+  const rulesEl = document.getElementById('rules');
+  const msgEl   = document.getElementById('mapmsg');
+
+  function msg(text, ok) {
+    msgEl.textContent = text;
+    msgEl.className = ok ? 'ok' : 'bad';
+  }
 
   async function loadMapping() {
     let res;
@@ -271,7 +268,6 @@
       try {
         if (navigator.clipboard) await navigator.clipboard.writeText(dataUrl);
         else document.execCommand('copy');
-
         btn.textContent = MAP.deliveryCopied;
         setTimeout(() => { btn.textContent = MAP.deliveryCopy; }, 1500);
       } catch { /* Zwischenablage nicht verfuegbar: Text ist markiert */ }
@@ -283,7 +279,7 @@
     hint.className = 'hint hint-spaced';
     hint.textContent = MAP.deliveryHint;
 
-    // Neues Passwort erzeugen, die Endpunkt-Kennung bleibt dabei erhalten
+    // Neues Passwort erzeugen; die Endpunkt-Kennung bleibt dabei erhalten
     const rotateRow = document.createElement('div');
     rotateRow.className = 'btnrow';
     const rotate = document.createElement('button');
@@ -436,13 +432,13 @@
     targets.forEach(t => {
       const op = document.createElement('option');
       op.value = t.id;
-      op.textContent = (t.label || t.id) + (t.required ? ' – ' + MAP.mapRequired : '');
+      op.textContent = t.id + (t.required ? ' – ' + MAP.mapRequired : '');
       if (t.id === rule.target) op.selected = true;
       sel.appendChild(op);
     });
     right.appendChild(sel);
 
-    // Wichtig: den Wert sofort uebernehmen, nicht erst beim Aendern
+    // Wichtig: den Wert sofort uebernehmen, nicht erst beim Aendern.
     function bindValue(el) {
       rule.targetValue = el.value;
       const sync = () => { rule.targetValue = el.value; };
@@ -494,7 +490,7 @@
 
   let dataUrlCache = null;
 
-  // --- Ausgehende Aufrufe ---
+  // --- Ausgehende Aufrufe -------------------------------------------------
 
   let outRules = [];
   const outEl    = document.getElementById('outrules');
@@ -603,7 +599,7 @@
     targets.forEach(t => {
       const op = document.createElement('option');
       op.value = t.id;
-      op.textContent = (t.label || t.id) + (t.required ? ' – ' + MAP.mapRequired : '');
+      op.textContent = t.id + (t.required ? ' – ' + MAP.mapRequired : '');
       if (t.id === row.source) op.selected = true;
       sel.appendChild(op);
     });
@@ -723,6 +719,16 @@
   const targetEl = document.getElementById('caltarget');
   const valWrap  = document.getElementById('calvalwrap');
   const hourEl   = document.getElementById('calhour');
+  const hourWrap = document.getElementById('calhourwrap');
+  const intEl    = document.getElementById('calinterval');
+  const leadEn   = document.getElementById('calleaden');
+  const leadWrap = document.getElementById('calleadwrap');
+  const leadH    = document.getElementById('calleadh');
+  const leadM    = document.getElementById('calleadm');
+  const trailEn  = document.getElementById('caltrailen');
+  const trailWrap= document.getElementById('caltrailwrap');
+  const trailH   = document.getElementById('caltrailh');
+  const trailM   = document.getElementById('caltrailm');
   const helpEl   = document.getElementById('calhelp');
   const evEl     = document.getElementById('calevents');
 
@@ -743,6 +749,29 @@
     valWrap.appendChild(calValueEl);
   }
 
+  // Baut die Auswahl des Abrufintervalls auf; 24 bedeutet taeglich zur Uhrzeit.
+  function renderInterval(selected) {
+    intEl.textContent = '';
+    [1,2,3,4,6,8,12,24].forEach((h) => {
+      const op = document.createElement('option');
+      op.value = String(h);
+      op.textContent = h === 24 ? T.calIntervalDaily : fill(T.calIntervalHours, { n: h });
+      if (Number(selected) === h) op.selected = true;
+      intEl.appendChild(op);
+    });
+  }
+
+  // Uhrzeit nur beim taeglichen Abruf, Zeiteingaben nur bei aktivem Vor-/Nachlauf.
+  function applyCalVisibility() {
+    hourWrap.classList.toggle('hidden', intEl.value !== '24');
+    leadWrap.classList.toggle('hidden', !leadEn.checked);
+    trailWrap.classList.toggle('hidden', !trailEn.checked);
+  }
+
+  intEl.addEventListener('change', applyCalVisibility);
+  leadEn.addEventListener('change', applyCalVisibility);
+  trailEn.addEventListener('change', applyCalVisibility);
+
   // Fuellt die Kalendermaske aus den geladenen Einstellungen.
   function renderCalendar() {
     if (!calendar) return;
@@ -751,12 +780,21 @@
     urlEl.value  = calendar.url || '';
     keyEl.value  = calendar.keyword || '';
     hourEl.value = calendar.fetchHour ?? 3;
+    renderInterval(calendar.fetchEveryHours ?? 24);
+
+    leadEn.checked  = calendar.leadEnabled === true;
+    leadH.value     = calendar.leadHours   ?? 0;
+    leadM.value     = calendar.leadMinutes ?? 0;
+    trailEn.checked = calendar.trailEnabled === true;
+    trailH.value    = calendar.trailHours   ?? 0;
+    trailM.value    = calendar.trailMinutes ?? 0;
+    applyCalVisibility();
 
     targetEl.textContent = '';
     targets.forEach(t => {
       const op = document.createElement('option');
       op.value = t.id;
-      op.textContent = (t.label || t.id) + (t.required ? ' \u2013 ' + MAP.mapRequired : '');
+      op.textContent = t.id + (t.required ? ' \u2013 ' + MAP.mapRequired : '');
       if (t.id === calendar.target) op.selected = true;
       targetEl.appendChild(op);
     });
@@ -828,6 +866,13 @@
       target:    targetEl.value,
       value:     calValueEl ? calValueEl.value : null,
       fetchHour: parseInt(hourEl.value, 10),
+      fetchEveryHours: parseInt(intEl.value, 10),
+      leadEnabled:  leadEn.checked,
+      leadHours:    parseInt(leadH.value, 10) || 0,
+      leadMinutes:  parseInt(leadM.value, 10) || 0,
+      trailEnabled: trailEn.checked,
+      trailHours:   parseInt(trailH.value, 10) || 0,
+      trailMinutes: parseInt(trailM.value, 10) || 0,
     };
   }
 

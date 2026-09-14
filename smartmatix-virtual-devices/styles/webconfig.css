@@ -966,7 +966,7 @@ td.v {
 .addbtn-spaced {
   margin-top: 12px;
 }
-/* --- Zentrale Konfigurationsseite ---------------------------------------- */
+/* --- Sammelseite: Geraeteauswahl -------------------------------------------- */
 
 .hubpick {
   padding-bottom: 20px;
@@ -992,4 +992,38 @@ td.v {
 
 .hubpick select:focus {
   border-color: var(--accent);
+}
+
+/* --- Vor- und Nachlaufzeit ------------------------------------------------- */
+
+.cb-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 18px 0 10px;
+  font-size: .84rem;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.cb-inline input[type=checkbox] {
+  width: auto;
+  margin: 0;
+  cursor: pointer;
+}
+
+.timewrap {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.timewrap .timefield label {
+  margin-bottom: 5px;
+}
+
+#calhourwrap.hidden {
+  display: none;
 }

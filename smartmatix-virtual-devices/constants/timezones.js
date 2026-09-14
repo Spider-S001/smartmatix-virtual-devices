@@ -1,6 +1,7 @@
 'use strict';
 
 /**
+ * timezones.js
  * ---------------------------------------------------------------------------
  * Auswahlliste der europäischen Zeitzonen.
  *

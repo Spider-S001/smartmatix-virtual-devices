@@ -10,7 +10,7 @@
  *   • ganztägige Termine (VALUE=DATE)
  *   • Zeitzonen über TZID sowie UTC-Zeiten mit Z-Endung
  *   • Wiederholungen: FREQ=DAILY, WEEKLY, MONTHLY, YEARLY
- *     mit INTERVAL, BYDAY, BYMONTHDAY, BYMONTH, BYSETPOS, COUNT und UNTIL
+ *     mit INTERVAL, BYDAY, BYMONTHDAY, COUNT und UNTIL
  *   • ausgenommene Einzeltermine über EXDATE
  *   • geänderte Einzeltermine über RECURRENCE-ID
  *   • entfaltete Zeilen (Fortsetzung mit Leerzeichen) und maskierte Zeichen
@@ -144,7 +144,6 @@ function parseLine(line) {
   const parts = head.split(';');
 
   const params = {};
-  
   for (const part of parts.slice(1)) {
     const eq = part.indexOf('=');
     if (eq === -1) continue;
@@ -208,7 +207,8 @@ function parseDateValue(value, params = {}) {
 
   if (utc) return { date: new Date(Date.UTC(...nums)), allDay: false };
 
-  // TZID wird nicht in eine echte Zeitzonenrechnung übersetzt; die lokale Zeit des Containers entspricht in aller Regel der des Kalenders
+  // TZID wird nicht in eine echte Zeitzonenrechnung übersetzt; die lokale Zeit
+  // des Containers entspricht in aller Regel der des Kalenders.
   if (params.TZID) log.debug(`Kalender: TZID ${params.TZID} wird als Ortszeit ausgelegt.`);
   return { date: new Date(...nums), allDay: false };
 }
@@ -351,12 +351,11 @@ function parseRRule(value) {
     byMonth:    rule.BYMONTH
       ? rule.BYMONTH.split(',').map((d) => parseInt(d, 10)).filter(Number.isFinite)
       : null,
-    // Nicht unterstützte Angaben merken, damit sie protokolliert werden können
     bySetPos:   rule.BYSETPOS
       ? rule.BYSETPOS.split(',').map((d) => parseInt(d, 10))
           .filter((n) => Number.isFinite(n) && n !== 0)
       : null,
-    // Nicht unterstuetzte Angaben merken, damit sie protokolliert werden koennen
+    // Nicht unterstützte Angaben merken, damit sie protokolliert werden können
     unsupported: ['BYWEEKNO', 'BYYEARDAY'].filter((k) => k in rule),
   };
 }
@@ -379,14 +378,9 @@ function addDays(date, n) {
 
 /**
  * Prüft, ob ein Tag zu einer BYDAY-Angabe passt.
- *
  * Ein Zahlenpräfix wie "3TH" verlangt zusätzlich die dritte Woche des Monats,
  * "-1FR" den letzten Freitag. Trifft BYSETPOS die Auswahl, ist das Präfix
  * bedeutungslos und wird übergangen.
- *
- * @param {Date}     date
- * @param {string[]} byDay
- * @param {boolean}  ignorePrefix
  */
 function matchesByDay(date, byDay, ignorePrefix = false) {
   return byDay.some((entry) => {
@@ -400,17 +394,14 @@ function matchesByDay(date, byDay, ignorePrefix = false) {
     const position = Number(nth);
     if (position > 0) return Math.floor((date.getDate() - 1) / 7) + 1 === position;
 
-    // Negative Angabe zählt vom Monatsende, -1 ist der letzte
     const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
     return Math.floor((lastDay - date.getDate()) / 7) + 1 === -position;
   });
 }
 
 /**
- * Prüft eine BYMONTHDAY-Angabe. Negative Werte zählen vom Monatsende, -1 ist der letzte Tag des Monats.
- *
- * @param {Date}     date
- * @param {number[]} byMonthDay
+ * Prüft eine BYMONTHDAY-Angabe. Negative Werte zählen vom Monatsende,
+ * -1 ist der letzte Tag des Monats.
  */
 function matchesMonthDay(date, byMonthDay) {
   const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
@@ -418,15 +409,8 @@ function matchesMonthDay(date, byMonthDay) {
 }
 
 /**
- * Wertet BYSETPOS aus.
- *
- * BYSETPOS wählt aus allen Treffern einer Periode einzelne aus: "jeden dritten
- * Donnerstag im Monat" schreibt Apple als BYDAY=TH;BYSETPOS=3. Ohne diese
- * Auswertung löste jeder Donnerstag aus – der Termin käme also bis zu drei
- * Wochen zu früh.
- *
- * @param {Date}   candidate
- * @param {object} rule
+ * Wertet BYSETPOS aus. "Jeder dritte Donnerstag im Monat" schreibt Apple als
+ * BYDAY=TH;BYSETPOS=3. Ohne diese Auswertung löste jeder Donnerstag aus.
  */
 function matchesSetPos(candidate, rule) {
   const yearly = rule.freq === 'YEARLY';
@@ -437,7 +421,6 @@ function matchesSetPos(candidate, rule) {
     ? new Date(candidate.getFullYear() + 1, 0, 1)
     : new Date(candidate.getFullYear(), candidate.getMonth() + 1, 1);
 
-  // Alle Tage der Periode sammeln, die den uebrigen Angaben entsprechen
   const hits = [];
   for (let day = new Date(from); day < to; day = addDays(day, 1)) {
     if (rule.byMonth && !rule.byMonth.includes(day.getMonth() + 1)) continue;
@@ -446,7 +429,6 @@ function matchesSetPos(candidate, rule) {
     hits.push(day.getMonth() * 100 + day.getDate());
   }
 
-  // Auswahl anwenden: positive Werte zaehlen von vorn, negative von hinten
   const picked = rule.bySetPos
     .map((pos) => (pos > 0 ? hits[pos - 1] : hits[hits.length + pos]))
     .filter((v) => v !== undefined);
@@ -461,7 +443,8 @@ function matchesSetPos(candidate, rule) {
  * @param {object} rule
  */
 function matchesRule(candidate, start, rule) {
-  // BYMONTH gilt fuer alle Frequenzen ausser YEARLY; dort wird es unten gemeinsam mit den uebrigen Angaben geprueft.
+  // BYMONTH gilt fuer alle Frequenzen ausser YEARLY; dort wird es unten
+  // gemeinsam mit den uebrigen Angaben geprueft.
   if (rule.freq !== 'YEARLY' && rule.byMonth
       && !rule.byMonth.includes(candidate.getMonth() + 1)) return false;
 

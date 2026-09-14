@@ -113,8 +113,45 @@
           <label for="calvalwrap">{{t:calValue}}</label>
           <div id="calvalwrap"></div>
 
-          <label for="calhour">{{t:calHour}}</label>
-          <input type="number" id="calhour" min="0" max="23" step="1" placeholder="{{t:calHourHint}}">
+          <label for="calinterval">{{t:calInterval}}</label>
+          <select id="calinterval"></select>
+
+          <div id="calhourwrap">
+            <label for="calhour">{{t:calHour}}</label>
+            <input type="number" id="calhour" min="0" max="23" step="1" placeholder="{{t:calHourHint}}">
+          </div>
+
+          <label class="cb-inline">
+            <input type="checkbox" id="calleaden">
+            <span>{{t:calLead}}</span>
+          </label>
+          <div id="calleadwrap" class="timewrap hidden">
+            <div class="timefield">
+              <label for="calleadh">{{t:calHours}}</label>
+              <input type="number" id="calleadh" min="0" max="23" step="1" value="0">
+            </div>
+            <div class="timefield">
+              <label for="calleadm">{{t:calMinutes}}</label>
+              <input type="number" id="calleadm" min="0" max="59" step="5" value="0">
+            </div>
+          </div>
+          <p class="hint hint-spaced" id="calleadhint">{{t:calLeadHint}}</p>
+
+          <label class="cb-inline">
+            <input type="checkbox" id="caltrailen">
+            <span>{{t:calTrail}}</span>
+          </label>
+          <div id="caltrailwrap" class="timewrap hidden">
+            <div class="timefield">
+              <label for="caltrailh">{{t:calHours}}</label>
+              <input type="number" id="caltrailh" min="0" max="23" step="1" value="0">
+            </div>
+            <div class="timefield">
+              <label for="caltrailm">{{t:calMinutes}}</label>
+              <input type="number" id="caltrailm" min="0" max="59" step="5" value="0">
+            </div>
+          </div>
+          <p class="hint hint-spaced" id="caltrailhint">{{t:calTrailHint}}</p>
 
           <div class="btnrow">
             <button class="ghost" id="calfetch">{{t:calFetchNow}}</button>

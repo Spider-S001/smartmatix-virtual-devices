@@ -138,6 +138,15 @@ const PAGE_KEYS = {
   'calTarget': 'endpoint.cal.target',
   'calValue': 'endpoint.cal.value',
   'calHour': 'endpoint.cal.hour',
+  'calInterval': 'endpoint.cal.interval',
+  'calIntervalDaily': 'endpoint.cal.intervalDaily',
+  'calIntervalHours': 'endpoint.cal.intervalHours',
+  'calLead': 'endpoint.cal.lead',
+  'calLeadHint': 'endpoint.cal.leadHint',
+  'calTrail': 'endpoint.cal.trail',
+  'calTrailHint': 'endpoint.cal.trailHint',
+  'calHours': 'endpoint.cal.hours',
+  'calMinutes': 'endpoint.cal.minutes',
   'calHourHint': 'endpoint.cal.hourHint',
   'calSave': 'endpoint.cal.save',
   'calFetchNow': 'endpoint.cal.fetchNow',
@@ -153,7 +162,6 @@ const PAGE_KEYS = {
   'calHelpOutlook': 'endpoint.cal.helpOutlook',
   'calHelpIcal': 'endpoint.cal.helpIcal',
   'hubDevice': 'endpoint.hub.device',
-  'hubChoose': 'endpoint.hub.choose',
   'hubNone': 'endpoint.hub.none',
   'hubHeadline': 'endpoint.hub.headline',
   'hubIntro': 'endpoint.hub.intro',
@@ -412,9 +420,10 @@ function create({
   // endpointId > { deviceId, password }
   const registry = new Map();
 
-  // Sammelzugang: eigene Kennung, über die sich alle Geräte auf einer Seite
-  // bearbeiten lassen. Eine damit angemeldete Sitzung darf auf jeden Endpunkt
-  // zugreifen; die Zugänge der einzelnen Geräte bestehen daneben unverändert.
+  // Sammelzugang: eine eigene Kennung, über die sich alle Geräte auf einer
+  // Seite bearbeiten lassen. Ein damit angemeldeter Nutzer darf auf jeden
+  // Endpunkt zugreifen; die Zugänge der einzelnen Geräte bleiben daneben
+  // unverändert bestehen.
   let hub = null;   // { endpointId, password }
   // token > { endpointId, expiresAt }
   const sessions = new Map();
@@ -467,7 +476,6 @@ function create({
     
     if (!sess) return null;
     if (Date.now() > sess.expiresAt) { sessions.delete(token); return null; }
-
     // Eine Sitzung des Sammelzugangs gilt für jeden Endpunkt
     if (sess.hub) return sess;
     if (sess.endpointId !== endpointId) return null;
@@ -507,10 +515,9 @@ function create({
     const query = new URLSearchParams(rawQuery ?? '');
     const lang  = ['de', 'en'].includes(query.get('hl')) ? query.get('hl') : 'en';
 
-    // Konfigurationsseite
-    // Die Konfigurationsseite gibt es nur einmal, unter der Kennung des
+    // Konfigurationsseite: es gibt nur noch diese eine, unter der Kennung des
     // Sammelzugangs. Die Kennung eines Geraets dient ausschliesslich der
-    // Datenanlieferung und liefert keine Seite mehr aus.
+    // Datenanlieferung.
     if (req.method === 'GET' && action === undefined) {
       if (!isHub) return sendJSON(res, 404, { error: 'Not found' });
 
@@ -523,11 +530,14 @@ function create({
         'Referrer-Policy':        'no-referrer',
         'X-Frame-Options':        'DENY',
         'Content-Security-Policy': [
-          "default-src 'none'",
+          // 'self' statt 'none': Nachladungen des Browsers, etwa ein Symbol,
+          // laufen sonst gegen die Richtlinie.
+          "default-src 'self'",
           `script-src 'nonce-${nonce}'`,
           `style-src 'nonce-${nonce}'`,
           "img-src 'self' data:",
-          "connect-src 'self'",     // nur Anfragen an den eigenen Endpunkt
+          "connect-src 'self'",
+          "object-src 'none'",
           "form-action 'none'",
           "base-uri 'none'",
           "frame-ancestors 'none'",
@@ -536,12 +546,9 @@ function create({
       return res.end(buildPage(pluginId, lang, nonce));
     }
 
-    // Anmeldung > Session-Token
+    // Anmeldung > Session-Token; ausschliesslich am Sammelzugang
     if (req.method === 'POST' && action === 'session') {
-      // Angemeldet wird ausschliesslich am Sammelzugang; das Passwort eines
-      // Geraets gilt nur fuer dessen Datenanlieferung.
       if (!isHub) return sendJSON(res, 404, { error: 'Not found' });
-
       const key = clientKey(req, endpointId);
       
       if (isLocked(key)) return sendJSON(res, 429, { error: 'Too many attempts' });
@@ -932,6 +939,15 @@ function create({
     return `${proto}://${hostname}:${port}/${endpointId}${query}`;
   }
 
+  /**
+   * Baut die Adresse der zentralen Konfigurationsseite.
+   * @returns {string|null} null, wenn kein Sammelzugang eingerichtet ist
+   */
+  function getHubUrl(lang) {
+    if (!hub) return null;
+    return getPublicUrl(hub.endpointId, lang);
+  }
+
   // Gibt zurück, ob der Webserver gerade läuft.
   function isRunning() {
     return server !== null;
@@ -940,18 +956,6 @@ function create({
   // Anzahl der aktuell registrierten Endpunkte.
   function count() {
     return registry.size;
-  }
-
-  /**
-   * Baut die Adresse der zentralen Konfigurationsseite.
-   * @param   {string} [lang]
-   * @returns {string|null} null, wenn kein Sammelzugang eingerichtet ist
-   */
-  function getHubUrl(lang) {
-    if (!hub) return null;
-    const proto = tlsCreds || getTlsCredentials() ? 'https' : 'http';
-    const query = lang ? `?hl=${encodeURIComponent(lang)}` : '';
-    return `${proto}://${hostname}:${port}/${hub.endpointId}${query}`;
   }
 
   return { ensureCredentials, sync, getPublicUrl, getHubUrl, isRunning, count, stop };

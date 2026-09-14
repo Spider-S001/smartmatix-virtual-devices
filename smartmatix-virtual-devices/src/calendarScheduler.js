@@ -25,6 +25,7 @@ const calendar = require('./calendar');
 
 const TICK_MS         = 60_000;      // Prüfung auf Terminwechsel
 const LOOKAHEAD_HOURS = 36;          // Zeitfenster, das beim Abruf geladen wird
+const MAX_LEAD_HOURS  = 24;          // Obergrenze des Vorlaufs, erweitert das Fenster
 const STATE_VERSION   = 1;
 
 const DATA_DIR   = fs.existsSync('/data') ? '/data' : path.join(__dirname, '..', 'data');
@@ -34,12 +35,12 @@ const STATE_FILE = path.join(DATA_DIR, 'calendar-state.json');
 //  Zustand
 // ---------------------------------------------------------------------------
 
+/** Liest den gespeicherten Zustand. */
 // Zwischenspeicher wie in mappings.js: der Zeitgeber liest den Zustand jede
 // Minute, ohne dass sich in aller Regel etwas geändert hat.
 let stateCache   = null;
 let stateMtimeMs = 0;
 
-/** Liest den gespeicherten Zustand. */
 function loadState() {
   try {
     const mtimeMs = fs.statSync(STATE_FILE).mtimeMs;
@@ -83,9 +84,31 @@ function saveState(state) {
  * @param {string} keyword
  */
 function matchesKeyword(summary, keyword) {
-  const needle = String(keyword ?? '').trim().toLowerCase();
-  if (!needle) return true;
-  return String(summary ?? '').toLowerCase().includes(needle);
+  // Mehrere Stichworte durch Komma getrennt; es genuegt, wenn eines passt.
+  const needles = String(keyword ?? '')
+    .split(',')
+    .map((k) => k.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (needles.length === 0) return true;
+
+  const text = String(summary ?? '').toLowerCase();
+  return needles.some((n) => text.includes(n));
+}
+
+/**
+ * Vor- und Nachlauf eines Termins in Millisekunden.
+ * @param   {object} config – Kalendereinstellungen eines Geräts
+ * @returns {{ lead: number, trail: number }}
+ */
+function offsets(config) {
+  const lead = config?.leadEnabled
+    ? ((config.leadHours ?? 0) * 60 + (config.leadMinutes ?? 0)) * 60_000
+    : 0;
+  const trail = config?.trailEnabled
+    ? ((config.trailHours ?? 0) * 60 + (config.trailMinutes ?? 0)) * 60_000
+    : 0;
+  return { lead, trail };
 }
 
 /**
@@ -123,6 +146,7 @@ function create({ getDevices, getConfig, readValue, writeValue, logger } = {}) {
 
   let ticker      = null;
   let lastFetchDay = null;
+  let lastFetchAt  = null;
 
   // Abruf
 
@@ -139,8 +163,10 @@ function create({ getDevices, getConfig, readValue, writeValue, logger } = {}) {
       return { ok: false, error: 'Kein Kalender eingerichtet' };
     }
 
-    const from = new Date();
-    const to   = new Date(from.getTime() + LOOKAHEAD_HOURS * 3600_000);
+    // Das Fenster beginnt um den moeglichen Vorlauf frueher, damit ein Termin,
+    // dessen Vorlauf bereits laeuft, beim Abruf noch gefunden wird.
+    const from = new Date(Date.now() - MAX_LEAD_HOURS * 3600_000);
+    const to   = new Date(Date.now() + LOOKAHEAD_HOURS * 3600_000);
 
     const result = await calendar.loadEvents(config.url, from, to);
 
@@ -165,7 +191,8 @@ function create({ getDevices, getConfig, readValue, writeValue, logger } = {}) {
    * @returns {Promise<number>} Anzahl erfolgreicher Abrufe
    */
   async function refreshAll() {
-    // Jede Adresse nur einmal laden und verteilen
+    // Mehrere Geräte teilen sich häufig einen Kalender. Jede Adresse wird
+    // deshalb nur einmal geladen und das Ergebnis an alle Geräte verteilt, die sie verwenden.
     const byUrl = new Map();
 
     for (const device of getDevices()) {
@@ -175,8 +202,8 @@ function create({ getDevices, getConfig, readValue, writeValue, logger } = {}) {
       byUrl.get(config.url).push(device.deviceId);
     }
 
-    const from = new Date();
-    const to   = new Date(from.getTime() + LOOKAHEAD_HOURS * 3600_000);
+    const from = new Date(Date.now() - MAX_LEAD_HOURS * 3600_000);
+    const to   = new Date(Date.now() + LOOKAHEAD_HOURS * 3600_000);
     let done = 0;
 
     for (const [url, deviceIds] of byUrl) {
@@ -190,8 +217,6 @@ function create({ getDevices, getConfig, readValue, writeValue, logger } = {}) {
         continue;
       }
 
-      // Das Stichwort filtert je Gerät unterschiedlich, die Termine sind aber
-      // dieselben: deshalb einmal laden, mehrfach filtern.
       for (const deviceId of deviceIds) {
         const config   = getConfig(deviceId);
         const matching = result.events.filter((e) => matchesKeyword(e.summary, config.keyword));
@@ -218,7 +243,7 @@ function create({ getDevices, getConfig, readValue, writeValue, logger } = {}) {
    * Prüft für ein Gerät, ob ein Termin beginnt oder endet, und schaltet.
    * @param {string} deviceId
    * @param {Date}   now
-   * @param {object} state - gemeinsamer Zustand, wird verändert
+   * @param {object} state – gemeinsamer Zustand, wird verändert
    */
   function applyDevice(deviceId, now, state) {
     const config = getConfig(deviceId);
@@ -226,10 +251,14 @@ function create({ getDevices, getConfig, readValue, writeValue, logger } = {}) {
 
     const entry  = cache.get(deviceId);
     const events = entry?.events ?? [];
-    const active = events.find((e) => e.start <= now && e.end > now);
     const stored = state.devices[deviceId] ?? null;
 
-    // Termin läuft gerade
+    // Vor- und Nachlauf verschieben die wirksamen Grenzen eines Termins
+    const { lead, trail } = offsets(config);
+    const active = events.find((e) =>
+      e.start.getTime() - lead <= now.getTime() && e.end.getTime() + trail > now.getTime());
+
+    // Ein Termin läuft gerade
     if (active) {
       const key = `${active.uid}|${active.start.getTime()}`;
 
@@ -249,7 +278,7 @@ function create({ getDevices, getConfig, readValue, writeValue, logger } = {}) {
         previous,
         applied:   config.value,
         startedAt: Date.now(),
-        endsAt:    active.end.getTime(),
+        endsAt:    active.end.getTime() + trail,
       };
 
       out.info(`Kalender: "${active.summary}" gestartet > ${deviceId} `
@@ -291,13 +320,21 @@ function create({ getDevices, getConfig, readValue, writeValue, logger } = {}) {
       .map((d) => getConfig(d.deviceId))
       .find((c) => c?.enabled);
 
-    // Täglicher Abruf zur eingestellten Uhrzeit
-    const hour   = config0?.fetchHour ?? 3;
-    const dayKey = now.toDateString();
+    const hour  = config0?.fetchHour ?? 3;
+    const every = Math.min(Math.max(parseInt(config0?.fetchEveryHours, 10) || 24, 1), 24);
 
-    if (lastFetchDay !== dayKey && now.getHours() >= hour) {
-      lastFetchDay = dayKey;
-      out.info('Kalender: taeglicher Abruf.');
+    if (every >= 24) {
+      // Einmal taeglich zur eingestellten Stunde
+      const dayKey = now.toDateString();
+      if (lastFetchDay !== dayKey && now.getHours() >= hour) {
+        lastFetchDay = dayKey;
+        out.info('Kalender: taeglicher Abruf.');
+        await refreshAll();
+      }
+    } else if (lastFetchAt === null || now.getTime() - lastFetchAt >= every * 3600_000) {
+      // Im eingestellten Abstand
+      lastFetchAt = now.getTime();
+      out.info(`Kalender: Abruf im ${every}-Stunden-Takt.`);
       await refreshAll();
     }
 
@@ -323,9 +360,9 @@ function create({ getDevices, getConfig, readValue, writeValue, logger } = {}) {
   function start() {
     if (ticker) return;
 
-    // Beim Start einmal abrufen, damit sofort korrekt geschaltet wird.
-    // lastFetchDay wird dabei gesetzt, sonst holt der erste Durchlauf den Kalender ein zweites Mal.
+    // Beim Start einmal abrufen, damit sofort korrekt geschaltet wird
     lastFetchDay = new Date().toDateString();
+    lastFetchAt  = Date.now();
     refreshAll().then(() => tick()).catch((err) =>
       out.error('Kalender: Erstabruf fehlgeschlagen:', err.message));
 

@@ -105,14 +105,28 @@ function normalizeEntry(entry) {
 /** Vorgabe für die Kalendereinstellungen eines Geräts. */
 function defaultCalendar() {
   return {
-    enabled:   false,
-    provider:  'ical',
-    url:       '',
-    keyword:   '',
-    target:    '',
-    value:     null,
-    fetchHour: 3,
+    enabled:         false,
+    provider:        'ical',
+    url:             '',
+    keyword:         '',
+    target:          '',
+    value:           null,
+    fetchHour:       3,
+    fetchEveryHours: 24,
+    leadEnabled:     false,
+    leadHours:       0,
+    leadMinutes:     0,
+    trailEnabled:    false,
+    trailHours:      0,
+    trailMinutes:    0,
   };
+}
+
+/** Begrenzt einen Zahlenwert auf einen Bereich; ungültige Eingaben werden zu min. */
+function clampInt(value, min, max, fallback = min) {
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(n, min), max);
 }
 
 /**
@@ -172,6 +186,23 @@ function validateCalendar(config, deviceType, lang = 'de') {
     errors.push(msg(lang, 'calendar.error.hourRange'));
   }
 
+  const fetchEveryHours = clampInt(config?.fetchEveryHours, 1, 24, 24);
+
+  const leadEnabled  = config?.leadEnabled === true;
+  const trailEnabled = config?.trailEnabled === true;
+
+  const leadHours    = leadEnabled  ? clampInt(config?.leadHours,    0, 23, 0) : 0;
+  const leadMinutes  = leadEnabled  ? clampInt(config?.leadMinutes,  0, 59, 0) : 0;
+  const trailHours   = trailEnabled ? clampInt(config?.trailHours,   0, 23, 0) : 0;
+  const trailMinutes = trailEnabled ? clampInt(config?.trailMinutes, 0, 59, 0) : 0;
+
+  if (leadEnabled && leadHours === 0 && leadMinutes === 0) {
+    errors.push(msg(lang, 'calendar.error.leadZero'));
+  }
+  if (trailEnabled && trailHours === 0 && trailMinutes === 0) {
+    errors.push(msg(lang, 'calendar.error.trailZero'));
+  }
+
   if (errors.length > 0) return { config: null, errors };
 
   return {
@@ -179,10 +210,18 @@ function validateCalendar(config, deviceType, lang = 'de') {
       enabled:   true,
       provider:  ['google', 'outlook', 'ical'].includes(config?.provider) ? config.provider : 'ical',
       url,
-      keyword:   String(config?.keyword ?? '').trim().slice(0, 100),
+      // Mehrere Stichworte durch Komma getrennt
+      keyword:   String(config?.keyword ?? '').trim().slice(0, 250),
       target:    target.id,
       value,
       fetchHour,
+      fetchEveryHours,
+      leadEnabled,
+      leadHours,
+      leadMinutes,
+      trailEnabled,
+      trailHours,
+      trailMinutes,
     },
     errors: [],
   };
@@ -196,7 +235,14 @@ function pickCalendar(config) {
     keyword:   typeof config?.keyword === 'string' ? config.keyword.trim() : '',
     target:    typeof config?.target === 'string' ? config.target : '',
     value:     config?.value ?? null,
-    fetchHour: Number.isFinite(parseInt(config?.fetchHour, 10)) ? parseInt(config.fetchHour, 10) : 3,
+    fetchHour: clampInt(config?.fetchHour, 0, 23, 3),
+    fetchEveryHours: clampInt(config?.fetchEveryHours, 1, 24, 24),
+    leadEnabled:  config?.leadEnabled === true,
+    leadHours:    clampInt(config?.leadHours,    0, 23, 0),
+    leadMinutes:  clampInt(config?.leadMinutes,  0, 59, 0),
+    trailEnabled: config?.trailEnabled === true,
+    trailHours:   clampInt(config?.trailHours,   0, 23, 0),
+    trailMinutes: clampInt(config?.trailMinutes, 0, 59, 0),
   };
 }
 
@@ -226,12 +272,13 @@ function setCalendar(deviceId, config) {
 //
 // Ohne ihn läse jeder Zugriff die Datei erneut und parste sie. Der
 // Kalender-Zeitgeber fragt jede Minute die Einstellungen jedes Geräts ab –
-// bei zwanzig Geräten wären das über 59.000 Lesevorgänge am Tag, was auf einem
-// USB-Stick als Datenträger deutlich zu Buche schlägt.
+// bei vielen Geräten summieren sich daraus tausende Lesevorgänge am Tag, was
+// auf dem Datenträger der HCU spürbar zu Buche schlägt.
 //
-// Die Gültigkeit wird über den Änderungszeitpunkt geprüft: ein Aufruf von stat
-// statt eines vollen Lesevorgangs. So werden auch Änderungen erkannt, die nicht
-// vom Plugin stammen – etwa nach einer Wiederherstellung aus einem Backup.
+// Die Gültigkeit wird über den Änderungszeitpunkt geprüft (ein Aufruf von
+// stat statt eines vollen Lesevorgangs), damit auch Änderungen erkannt
+// werden, die nicht vom Plugin stammen – etwa nach einer Wiederherstellung
+// aus einem Backup.
 let cache        = null;
 let cacheMtimeMs = 0;
 
@@ -852,7 +899,7 @@ module.exports = {
   PLACEHOLDER_RE,
   getRules, setRules, getOutboundCalls, setOutboundCalls, removeRules, pruneRules,
   validateRules, evaluate, coerce, msg,
-  getCalendar, setCalendar, validateCalendar, defaultCalendar, invalidate,
+  getCalendar, setCalendar, validateCalendar, defaultCalendar,
   validateOutboundCalls, diffFeatures, flattenFeatures,
   evaluateOutbound, buildCall, buildUrl, valueForRow,
   getTargets, getTarget,

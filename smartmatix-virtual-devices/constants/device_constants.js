@@ -11,6 +11,7 @@ const DEVICE_FEATURES = {
     stateMax:    1,
   },
   CONTACT_SENSOR: {
+    // Attribut heisst laut Connect API 1.0.1 (Kap. 6.7.7) 'triggered'
     features:    [{ type: 'contactSensorState', triggered: false }],
     stateType:   'BOOLEAN',
     stateKey:    'triggered',

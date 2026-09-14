@@ -46,16 +46,6 @@ const REPO_URL    = 'https://github.com/Spider-S001/smartmatix-virtual-devices';
 const PLUGIN_NAME = 'SmartMatix Virtual Devices';
 
 // Port des temporären Backup-/Restore-Webservers.
-/**
- * Vergleicht zwei Attributwerte so, wie sie in den Features stehen.
- * Zahlen mit kleiner Toleranz, um Rundungsfehler bei Gleitkommazahlen
- * nicht als Änderung zu werten.
- */
-function sameValue(a, b) {
-  if (typeof a === 'number' && typeof b === 'number') return Math.abs(a - b) < 1e-9;
-  return a === b;
-}
-
 const BACKUP_PORT = 8744;
 
 // Port des dauerhaften Endpunkt-Webservers (dataEndpoint.js).
@@ -66,6 +56,18 @@ const BACKUP_GROUP_ORDER = 997;
 
 // Abstand der Sortiernummern zwischen zwei Variablen-Gruppen.
 const VARIABLE_ORDER_STEP = 10;
+
+// Hoechstzahl der Abschnitte zum gleichzeitigen Anlegen neuer Geraete.
+const MAX_NEW_SLOTS = 10;
+
+/**
+ * Vergleicht zwei Attributwerte so, wie sie in den Features stehen.
+ * Zahlen mit kleiner Toleranz, um Rundungsfehler nicht als Änderung zu werten.
+ */
+function sameValue(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return Math.abs(a - b) < 1e-9;
+  return a === b;
+}
 
 
 
@@ -98,6 +100,12 @@ class Plugin {
     // CONFIG_UPDATE_REQUEST aktualisiert (body.languageCode).
     this._lang = 'de';
 
+    // Merker: nach dem Speichern alle Geraete erneut melden
+    this._reincludePending = false;
+
+    // Kennung der laufenden Systemzustandsabfrage
+    this._systemStateRequestId = null;
+
     // Update-Checker
     this._updater = null;
 
@@ -126,7 +134,7 @@ class Plugin {
       hostname:      this._backupHost,
       port:          ENDPOINT_PORT,
       getDeviceById: (deviceId) => devices.getById(deviceId),
-      getTargets:    (deviceType) => this._namedTargets(deviceType),
+      getTargets:    (deviceType) => mappings.getTargets(deviceType),
       getRules:      (deviceId) => mappings.getRules(deviceId),
       saveRules:     (deviceId, rules, lang) => this._saveMappingRules(deviceId, rules, lang),
       getOutbound:   (deviceId) => mappings.getOutboundCalls(deviceId),
@@ -152,9 +160,9 @@ class Plugin {
       logger:     log,
     });
 
-    // Zeitzone setzen, bevor der Kalender startet. Die HCU fuehrt ihre
+    // Zeitzone setzen, bevor der Kalender startet. Die HCU führt ihre
     // Container in UTC; ohne diese Angabe legte das Plugin die Ortszeiten
-    // eines Kalenders als UTC aus und Termine traeten versetzt ein.
+    // eines Kalenders als UTC aus.
     this._applyTimezone();
 
     this._syncEndpoints();
@@ -199,6 +207,10 @@ class Plugin {
       headers: {
         'authtoken': this.authtoken,
         'plugin-id': this.pluginId,
+        // Ohne diesen Header sendet die HCU keine Systemereignisse. Sie
+        // werden gebraucht, um Umbenennungen aus der Homematic IP App
+        // zu erfahren.
+        'hmip-system-events': 'true',
       },
     });
 
@@ -217,6 +229,10 @@ class Plugin {
       this._updater = new HcuPluginUpdater(this._ws, this.pluginId, { language: this._lang });
       this._updater.startSchedule(REPO_URL, PLUGIN_NAME);
     }
+
+    // Systemzustand anfordern, um die Kennungen der HCU den eigenen Geraeten
+    // zuzuordnen. Erst danach lassen sich Umbenennungen aus der App zuordnen.
+    this._requestSystemState();
 
     // Pflicht bei Verbindungsaufbau: Plugin als READY melden
     this._sendPluginReady(uuidv4());
@@ -262,6 +278,14 @@ class Plugin {
       case 'CONFIG_TEMPLATE_REQUEST':
         // HCU fragt nach konfigurierbaren Einstellungen des Plugins
         this._handleConfigTemplateRequest(message);
+        break;
+
+      case 'HMIP_SYSTEM_EVENT':
+        this._handleSystemEvent(message);
+        break;
+
+      case 'HMIP_SYSTEM_RESPONSE':
+        this._handleSystemResponse(message);
         break;
 
       case 'CONFIG_UPDATE_REQUEST':
@@ -444,23 +468,36 @@ class Plugin {
     // --- Backup / Restore ---
     if (this._handleBackupRestoreUpdate(message, properties)) return;
 
-    const newName = devices.sanitize(properties?.new_variable);
     const deviceList = devices.getAll();
     const VALID_TYPES = Object.keys(DEVICE_FEATURES);
 
-    // Das Dropdown liefert den Anzeigenamen zurück, nicht die technische
-    // Bezeichnung; deshalb erst zurückübersetzen.
-    const newType = this._deviceTypeFromName(properties?.new_variable_type, VALID_TYPES);
+    // Anzahl der Abschnitte zum Anlegen neuer Geraete
+    const wantedSlots = parseInt(properties?.new_variable_count, 10);
+    if (Number.isFinite(wantedSlots) && wantedSlots >= 1 && wantedSlots <= MAX_NEW_SLOTS
+        && wantedSlots !== this._newSlotCount()) {
+      this._config.newDeviceSlots = wantedSlots;
+      configStore.save(this._config);
+      log.info(`Abschnitte fuer neue Geraete: ${wantedSlots}`);
+    }
  
     // Properties kommen als flaches Objekt: { reincludeDevices: 'wert', ... }
     const reincludeDevices = properties?.reincludeDevices;
  
     if (reincludeDevices !== undefined) {
-      this._config.reincludeDevices = reincludeDevices;
+      const wanted  = reincludeDevices === true || reincludeDevices === 'true';
+      const changed = wanted !== (this._config.reincludeDevices === true);
+
+      this._config.reincludeDevices = wanted;
       configStore.save(this._config);
+
+      // Beim Einschalten alle Geräte erneut melden
+      if (changed && wanted) {
+        log.info('Reinkludieren eingeschaltet, melde alle Geraete erneut an die HCU.');
+        this._reincludePending = true;
+      }
     }
 
-    // Zeitzone: das Dropdown liefert die Beschriftung zurueck
+    // Zeitzone: das Dropdown liefert die Beschriftung zurück
     const zone = timezones.fromLabel(properties?.timezone);
     if (zone && zone !== this._config.timezone) {
       this._config.timezone = zone;
@@ -502,7 +539,7 @@ class Plugin {
             // Prüfen ob dieses Feature den stateKey enthält
             if (f[featureDef.stateKey] === undefined) return f;
 
-            // Feld nicht im Request > Wert unveraendert lassen
+            // Feld nicht im Request > Wert unveraendert lassen.
             if (state === undefined) return f;
 
             // Wert korrekt casten, je nach stateType
@@ -538,15 +575,38 @@ class Plugin {
       }
     });
  
-    // Neues Gerät erstellen
-    if (newName && newType && VALID_TYPES.includes(newType)) {
-      const newDevice = devices.createDevice(newName, newType, deviceList);
-      devicesStore.update(newDevice.deviceId, newDevice);
-      log.info(`Neues Geraet erstellt: ${newDevice.deviceId}`);
+    // Alle Abschnitte durchgehen. Leer gelassene werden uebergangen, so
+    // lassen sich auch weniger Geraete anlegen als Abschnitte angezeigt werden.
+    const slotCount = this._newSlotCount();
+    const known     = [...deviceList];
+    let created     = 0;
 
-      // DISCOVER_RESPONSE senden damit das Gerät sofort in der HCU erscheint
+    for (let i = 1; i <= slotCount; i++) {
+      const name = devices.sanitize(properties?.[`new_variable_${i}`]);
+      if (!name) continue;
+
+      const type = this._deviceTypeFromName(properties?.[`new_variable_${i}_type`], VALID_TYPES);
+      if (!type || !VALID_TYPES.includes(type)) continue;
+
+      // known mitfuehren, damit createDevice fortlaufende Kennungen vergibt
+      const newDevice = devices.createDevice(name, type, known);
+      devicesStore.update(newDevice.deviceId, newDevice);
+      known.push(newDevice);
+      created++;
+
+      log.info(`Neues Geraet erstellt: ${newDevice.deviceId} (${name})`);
+    }
+
+    if (created > 0) {
+      // Nach dem Anlegen auf einen Abschnitt zuruecksetzen
+      if (slotCount !== 1) {
+        this._config.newDeviceSlots = 1;
+        configStore.save(this._config);
+      }
+
       devices.reload();
       this._sendDiscoverResponse();
+      log.info(`${created} Geraet(e) angelegt.`);
     }
  
     // Aktualisierte Geräteliste neu laden
@@ -554,6 +614,13 @@ class Plugin {
 
     // Endpunkte an den geänderten Gerätebestand angleichen (startet bzw. stoppt den Webserver)
     this._syncEndpoints();
+
+    // Umbenennungen aus demselben Speichervorgang gehen mit
+    if (this._reincludePending) {
+      this._reincludePending = false;
+      this._sendDiscoverResponse();
+    }
+
     this._pushConfigTemplate();
 
     const response = {
@@ -599,11 +666,38 @@ class Plugin {
   // ---------------------------------------------------------------------------
 
   /**
+   * Übersetzt einen Schlüssel und ersetzt Platzhalter der Form {name}.
+   * @param {string} key    – Schlüssel aus lang/localization.json
+   * @param {object} [vars] – Werte für die Platzhalter
+   */
+  /**
+   * Lesbarer Name einer Geräteart, wie sie in der Homematic IP App heißt.
+   * Fehlt eine Übersetzung, bleibt der technische Name stehen.
+   */
+  _deviceTypeName(deviceType) {
+    const key  = `devicetype.${deviceType}`;
+    const name = t(this._lang, key);
+    return name === key ? deviceType : name;
+  }
+
+  /**
+   * Ordnet einen im Dropdown gewählten Anzeigenamen der technischen Geräteart zu.
+   * Geprüft werden alle Sprachen, damit die Zuordnung unabhängig von der
+   * eingestellten Sprache funktioniert. Ein technischer Name bleibt gültig.
+   */
+  _deviceTypeFromName(value, known) {
+    if (!value) return null;
+    if (known.includes(value)) return value;
+    for (const type of known) {
+      const key = `devicetype.${type}`;
+      if (availableLanguages().some((lang) => t(lang, key) === value)) return type;
+    }
+    return null;
+  }
+
+  /**
    * Lesbarer Name eines Attributs, z.B. "Solltemperatur" statt
-   * "setPointTemperature". Fehlt eine Übersetzung, bleibt die Kennung stehen.
-   *
-   * @param {string} featureType – z.B. 'setPointTemperature'
-   * @param {string} attribute   – z.B. 'setPointTemperature'
+   * "setPointTemperature".
    */
   _attributeName(featureType, attribute) {
     if (!featureType) return attribute;
@@ -614,13 +708,6 @@ class Plugin {
 
   /**
    * Ziel-Attribute eines Gerätetyps, ergänzt um einen lesbaren Namen.
-   *
-   * Die Oberfläche zeigt den Namen an, arbeitet intern aber weiter mit der
-   * technischen Kennung "featureType.attribute" – gespeicherte Regeln bleiben
-   * damit unabhängig von der Sprache gültig.
-   *
-   * @param   {string} deviceType
-   * @returns {Array} Ziele mit zusätzlichem Feld "label"
    */
   _namedTargets(deviceType) {
     return mappings.getTargets(deviceType).map((target) => ({
@@ -629,47 +716,6 @@ class Plugin {
     }));
   }
 
-  /**
-   * Lesbarer Name einer Geräteart, wie sie in der Homematic IP App heißt.
-   * Fehlt eine Übersetzung, bleibt der technische Name stehen.
-   *
-   * @param   {string} deviceType – z.B. 'WINDOW_COVERING'
-   * @returns {string} z.B. 'Rollladen/Jalousie (Position)'
-   */
-  _deviceTypeName(deviceType) {
-    const key  = `devicetype.${deviceType}`;
-    const name = t(this._lang, key);
-    return name === key ? deviceType : name;
-  }
-
-  /**
-   * Ordnet einen im Dropdown gewählten Anzeigenamen der technischen Geräteart zu.
-   *
-   * Die HCU liefert bei einem ENUM den Anzeigetext zurück, nicht den Wert.
-   * Geprüft werden alle verfügbaren Sprachen, damit die Zuordnung unabhängig
-   * von der eingestellten Sprache funktioniert. Ein bereits technischer Name
-   * wird unverändert übernommen.
-   *
-   * @param   {string}   value – Auswahl aus dem Dropdown
-   * @param   {string[]} known – gültige Gerätearten
-   * @returns {string|null}
-   */
-  _deviceTypeFromName(value, known) {
-    if (!value) return null;
-    if (known.includes(value)) return value;
-
-    for (const type of known) {
-      const key = `devicetype.${type}`;
-      if (availableLanguages().some((lang) => t(lang, key) === value)) return type;
-    }
-    return null;
-  }
-
-  /**
-   * Übersetzt einen Schlüssel und ersetzt Platzhalter der Form {name}.
-   * @param {string} key    – Schlüssel aus lang/localization.json
-   * @param {object} [vars] – Werte für die Platzhalter
-   */
   _t(key, vars = {}) {
     return Object.entries(vars).reduce(
       (text, [name, value]) => text.replaceAll(`{${name}}`, String(value)),
@@ -865,34 +911,15 @@ class Plugin {
    * Startet oder stoppt dadurch den Webserver.
    */
   /**
-   * Übernimmt die eingestellte Zeitzone in den Prozess.
-   *
-   * Node wertet process.env.TZ bei jeder Datumsoperation neu aus. Damit sind
-   * sämtliche Zeitrechnungen des Plugins ortsrichtig, einschließlich der
-   * Sommerzeit, ohne eigene Umrechnung.
-   */
-  _applyTimezone() {
-    const zone = timezones.isKnown(this._config.timezone)
-      ? this._config.timezone
-      : timezones.DEFAULT_TIMEZONE;
-
-    timezones.apply(zone);
-    log.info(`Zeitzone: ${zone} (aktuell ${-new Date().getTimezoneOffset() / 60} h zu UTC)`);
-  }
-
-  /**
    * Zugangsdaten der Sammelseite. Werden beim ersten aktiven Endpunkt erzeugt
    * und in der config.json abgelegt, damit die Adresse dauerhaft gleich bleibt.
-   *
-   * @param   {boolean} anyActive – ob mindestens ein Endpunkt aktiv ist
-   * @returns {{ endpointId: string, password: string } | null}
    */
   _hubAccess(anyActive) {
     if (!anyActive) return null;
 
     let changed = false;
     if (!this._config.hubId) {
-      this._config.hubId = require('crypto').randomUUID();
+      this._config.hubId = uuidv4();
       changed = true;
     }
     if (!this._config.hubPassword) {
@@ -907,12 +934,35 @@ class Plugin {
     return { endpointId: this._config.hubId, password: this._config.hubPassword };
   }
 
+  /**
+   * Übernimmt die eingestellte Zeitzone in den Prozess.
+   * Node wertet process.env.TZ bei jeder Datumsoperation neu aus.
+   */
+  /**
+   * Anzahl der Abschnitte, die zum Anlegen neuer Geräte angezeigt werden.
+   * @returns {number} 1 bis MAX_NEW_SLOTS
+   */
+  _newSlotCount() {
+    const n = parseInt(this._config.newDeviceSlots, 10);
+    if (!Number.isFinite(n)) return 1;
+    return Math.min(Math.max(n, 1), MAX_NEW_SLOTS);
+  }
+
+  _applyTimezone() {
+    const zone = timezones.isKnown(this._config.timezone)
+      ? this._config.timezone
+      : timezones.DEFAULT_TIMEZONE;
+
+    timezones.apply(zone);
+    log.info(`Zeitzone: ${zone} (aktuell ${-new Date().getTimezoneOffset() / 60} h zu UTC)`);
+  }
+
   _syncEndpoints() {
     try {
-      const all    = devices.getAll();
+      const all       = devices.getAll();
       const anyActive = all.some((d) => d.endpointEnabled === true
         && d.endpointId && d.endpointPassword);
-      const active = this._endpointManager.sync(all, this._hubAccess(anyActive));
+      const active    = this._endpointManager.sync(all, this._hubAccess(anyActive));
       // Regeln gelöschter Geräte mitentfernen
       mappings.pruneRules(all.map((d) => d.deviceId));
       this._calendar?.prune(all.map((d) => d.deviceId));
@@ -1038,7 +1088,7 @@ class Plugin {
       features.push(feature);
     }
 
-    // Unveränderte Werte nicht erneut melden, siehe _applyIncomingData
+    // Unveränderte Werte nicht erneut schreiben und melden
     if (sameValue(feature[attribute], value)) return;
     feature[attribute] = value;
 
@@ -1066,11 +1116,11 @@ class Plugin {
     devicesStore.update(deviceId, { ...device, endpointPassword: password });
     devices.reload();
 
-    // Registrierung auffrischen, damit sofort das neue Passwort gilt.
-    // Ein Neusenden der HCU-Einstellungsseite entfaellt: das Passwort steht
-    // dort nicht mehr, es erscheint nur in der Anlieferungsadresse auf der
-    // zentralen Konfigurationsseite.
+    // Registrierung auffrischen, damit sofort das neue Passwort gilt
     this._syncEndpoints();
+
+    // Einstellungsseite der HCU neu senden, damit dort das neue Passwort steht
+    this._pushConfigTemplate();
 
     log.info(`Neues Endpunkt-Passwort fuer "${deviceId}" erzeugt.`);
     return { ok: true, password };
@@ -1221,14 +1271,13 @@ class Plugin {
    */
   _fireOutbound(deviceId, before, after) {
     try {
-      // Zuerst prüfen, ob für dieses Gerät überhaupt eine Zieladresse hinterlegt ist
-      const configured = mappings.getOutboundCalls(deviceId);
-      if (configured.length === 0) return 0;
-
       const changes = mappings.diffFeatures(before, after);
       if (changes.length === 0) return 0;
 
-      // Ein Aufruf sendet immer alle seine Attribute, daher braucht die Auswertung den vollstaendigen Zustand nach der Aenderung
+      const configured = mappings.getOutboundCalls(deviceId);
+      if (configured.length === 0) return 0;
+
+      // Ein Aufruf sendet immer alle seine Attribute
       const calls = mappings.evaluateOutbound(configured, changes, after);
       if (calls.length === 0) return 0;
 
@@ -1246,6 +1295,175 @@ class Plugin {
    * @param   {object} incoming – { name: wert, … }
    * @returns {{ applied: Array, ignored: Array }}
    */
+  /**
+   * Fordert den Zustand des Homematic IP Systems an.
+   *
+   * Aus der Antwort wird die Zuordnung zwischen den Kennungen der HCU und den
+   * eigenen Geräten aufgebaut. Ohne sie ließe sich eine Umbenennung nicht
+   * zuordnen: Das Ereignis enthält nur den **neuen** Namen, ein Abgleich über
+   * den bisherigen Namen ginge also gerade dann ins Leere, wenn er gebraucht
+   * wird.
+   */
+  _requestSystemState() {
+    this._systemStateRequestId = uuidv4();
+
+    this._send({
+      id:       this._systemStateRequestId,
+      pluginId: this.pluginId,
+      type:     'HMIP_SYSTEM_REQUEST',
+      body: {
+        path: '/hmip/home/getSystemState',
+        body: {},
+      },
+    });
+  }
+
+  /**
+   * Wertet die Antwort auf die Systemzustandsabfrage aus.
+   *
+   * Zugeordnet wird über den Namen: Zu diesem Zeitpunkt stimmen die Namen auf
+   * beiden Seiten noch überein, weil das Plugin sie selbst vergeben hat.
+   * Mehrdeutige Namen werden übergangen und protokolliert.
+   */
+  _handleSystemResponse(message) {
+    if (message?.id !== this._systemStateRequestId) return;
+
+    const code = message?.body?.code;
+    if (code !== 200) {
+      log.warn(`Systemzustand nicht abrufbar (Code ${code}). `
+        + 'Umbenennungen aus der App koennen nicht zugeordnet werden.');
+      return;
+    }
+
+    const remote = message?.body?.body?.devices;
+    if (!remote || typeof remote !== 'object') return;
+
+    const own = devices.getAll().filter((d) => !d.hcuDeviceId);
+    let mapped = 0;
+
+    for (const entry of Object.values(remote)) {
+      const label = typeof entry?.label === 'string' ? entry.label.trim() : '';
+      if (!label || !entry?.id) continue;
+
+      const hits = own.filter((d) => d.friendlyName === label);
+      if (hits.length !== 1) continue;
+
+      const device = devices.getById(hits[0].deviceId);
+      if (!device || device.hcuDeviceId === entry.id) continue;
+
+      devicesStore.update(device.deviceId, { ...device, hcuDeviceId: entry.id });
+      mapped++;
+    }
+
+    if (mapped > 0) {
+      devices.reload();
+      log.info(`${mapped} Geraet(e) der HCU-Kennung zugeordnet.`);
+    }
+
+    const offen = devices.getAll().filter((d) => !d.hcuDeviceId).length;
+    if (offen > 0) {
+      log.info(`${offen} Geraet(e) ohne HCU-Kennung. Umbenennungen in der App `
+        + 'werden fuer sie erst nach einer eindeutigen Zuordnung uebernommen.');
+    }
+  }
+
+  /**
+   * Wertet ein Systemereignis der HCU aus.
+   *
+   * Interessant ist allein DEVICE_CHANGED: Wird ein Gerät in der Homematic IP
+   * App umbenannt, steht der neue Name im Feld label. Die HCU ist dabei
+   * führend – der Name wird in die devices.json übernommen.
+   *
+   * Ein Ereignis kann mehrere Änderungen in einer Transaktion bündeln,
+   * deshalb wird die gesamte events-Map durchgegangen.
+   */
+  _handleSystemEvent(message) {
+    const events = message?.body?.eventTransaction?.events;
+    if (!events || typeof events !== 'object') return;
+
+    let renamed = 0;
+
+    for (const key of Object.keys(events).sort((a, b) => Number(a) - Number(b))) {
+      const event = events[key];
+
+      // DEVICE_ADDED liefert das Geraet mit dem Namen, den das Plugin vergeben hat
+      if (event?.pushEventType === 'DEVICE_ADDED') {
+        this._linkRemoteDevice(event.device);
+        continue;
+      }
+
+      if (event?.pushEventType !== 'DEVICE_CHANGED') continue;
+      if (this._applyRemoteName(event.device)) renamed++;
+    }
+
+    if (renamed > 0) {
+      this._pushConfigTemplate();
+    }
+  }
+
+  /**
+   * Hält die HCU-Kennung eines neu aufgenommenen Geräts fest.
+   */
+  _linkRemoteDevice(remote) {
+    const label = typeof remote?.label === 'string' ? remote.label.trim() : '';
+    if (!label || !remote?.id) return;
+
+    const hits = devices.getAll().filter((d) => !d.hcuDeviceId && d.friendlyName === label);
+    if (hits.length !== 1) return;
+
+    devicesStore.update(hits[0].deviceId, { ...hits[0], hcuDeviceId: remote.id });
+    devices.reload();
+    log.info(`Geraet "${hits[0].deviceId}" der HCU-Kennung ${remote.id} zugeordnet.`);
+  }
+
+  /**
+   * Übernimmt den Namen eines Geräts aus einem DEVICE_CHANGED-Ereignis.
+   *
+   * @returns {boolean} true, wenn ein Name übernommen wurde
+   */
+  _applyRemoteName(remote) {
+    const label = typeof remote?.label === 'string' ? remote.label.trim() : '';
+    if (!label || !remote?.id) return false;
+
+    const device = this._matchRemoteDevice(remote);
+    if (!device) {
+      log.debug(`Systemereignis fuer unbekanntes Geraet "${remote.id}" (${label}) uebergangen.`);
+      return false;
+    }
+
+    if (device.hcuDeviceId !== remote.id) {
+      devicesStore.update(device.deviceId, { ...device, hcuDeviceId: remote.id });
+      devices.reload();
+    }
+
+    const current = devices.getById(device.deviceId);
+    const clean   = devices.sanitize(label);
+    if (current.friendlyName === clean) return false;
+
+    devicesStore.update(device.deviceId, { ...current, friendlyName: clean });
+    devices.reload();
+
+    log.info(`Geraet in der Homematic IP App umbenannt: "${current.friendlyName}" heisst jetzt "${clean}".`);
+    return true;
+  }
+
+  /**
+   * Sucht das Gerät, auf das sich ein Ereignis der HCU bezieht.
+   * Ein Abgleich über den Namen hilft hier nicht: das Ereignis enthält
+   * bereits den neuen Namen.
+   */
+  _matchRemoteDevice(remote) {
+    const all = devices.getAll();
+
+    const known = all.find((d) => d.hcuDeviceId && d.hcuDeviceId === remote.id);
+    if (known) return known;
+
+    const direct = all.find((d) => d.deviceId === remote.id);
+    if (direct) return direct;
+
+    return null;
+  }
+
   _applyIncomingData(deviceId, incoming) {
     const lang   = this._lang;
     const device = devices.getById(deviceId);
@@ -1277,7 +1495,8 @@ class Plugin {
       changed.push(update);
     }
 
-    // Liefert ein externes System denselben Wert erneut, ändert sich nichts
+    // Liefert ein externes System denselben Wert erneut, ändert sich nichts.
+    // Dann wird weder geschrieben noch ein STATUS_EVENT gesendet.
     if (changed.length === 0) {
       log.debug(`Endpunkt-Daten fuer "${deviceId}" ohne Wertaenderung, kein Ereignis gesendet.`);
       return { applied, ignored };
@@ -1295,10 +1514,18 @@ class Plugin {
   }
 
   /**
-   * Ergänzt Passwort und Link der zentralen Konfigurationsseite in der
-   * allgemeinen Gruppe. Ohne aktiven Endpunkt entfallen beide Felder.
+   * Ergänzt die Endpunkt-Felder einer Variablen-Gruppe:
+   *   • Checkbox zum Aktivieren
+   *   • bei aktivem Endpunkt zusätzlich Passwort (READONLY) und Link
    *
    * @param {object} properties – Properties-Objekt für CONFIG_TEMPLATE_RESPONSE
+   * @param {object} device     – Geräteobjekt aus der devices.json
+   * @param {number} num        – laufende Nummer der Variablen (1-basiert)
+   * @param {number} orderBase  – Basis-Sortiernummer dieser Gruppe
+   */
+  /**
+   * Ergänzt Passwort und Link der zentralen Konfigurationsseite in der
+   * allgemeinen Gruppe. Ohne aktiven Endpunkt entfallen beide Felder.
    */
   _addHubFields(properties) {
     const url = this._endpointManager.getHubUrl(this._lang);
@@ -1324,16 +1551,6 @@ class Plugin {
     };
   }
 
-  /**
-   * Ergänzt die Endpunkt-Felder einer Variablen-Gruppe:
-   *   - Checkbox zum Aktivieren
-   *   - bei aktivem Endpunkt zusätzlich Passwort (READONLY) und Link
-   *
-   * @param {object} properties – Properties-Objekt für CONFIG_TEMPLATE_RESPONSE
-   * @param {object} device     – Geräteobjekt aus der devices.json
-   * @param {number} num        – laufende Nummer der Variablen (1-basiert)
-   * @param {number} orderBase  – Basis-Sortiernummer dieser Gruppe
-   */
   _addEndpointFields(properties, device, num, orderBase) {
     const enabled = device.endpointEnabled === true;
 
@@ -1396,20 +1613,30 @@ class Plugin {
       };
 
       // Existierende Geräte durchgehen und Gruppen dafür generieren
+      const deviceListForNames = devices.getAll();
+
       for(let i = 0; i < varCount; i++) {
-        let num = i + 1;
+        let num  = i + 1;
+        const nm = deviceListForNames[i]?.friendlyName;
         groups[`variable_${num}`] = {
-          friendlyName: this._t('group.variable.name', { num }),
-          description:  this._t('group.variable.description'),
+          friendlyName: nm
+            ? this._t('group.variable.name', { num, name: nm })
+            : this._t('group.variable.unnamed', { num }),
+          description:  this._t('group.variable.description', { name: nm ?? '' }),
           order:        2 + i,
         };
       }
 
-      groups['new_variable'] = {
-        friendlyName: this._t('group.new_variable.name'),
-        description:  this._t('group.new_variable.description'),
-        order:        varCount + 2,
-      };
+      const newSlots = this._newSlotCount();
+      for (let i = 1; i <= newSlots; i++) {
+        groups[`new_variable_${i}`] = {
+          friendlyName: newSlots === 1
+            ? this._t('group.new_variable.name')
+            : this._t('group.new_variable.numbered', { n: i, total: newSlots }),
+          description:  this._t('group.new_variable.description'),
+          order:        varCount + 1 + i,
+        };
+      }
 
       // --- Backup & Wiederherstellung ---
       const { backupGroup, restoreGroup, backupActive, restoreActive } = this._getBackupState();
@@ -1459,7 +1686,7 @@ class Plugin {
             groupId:       'general',
             order:         1,
             defaultValue: 'false',
-            currentValue:  this._config.reincludeDevices || 'false',
+            currentValue:  this._config.reincludeDevices === true ? 'true' : 'false',
           },
       };
 
@@ -1478,7 +1705,7 @@ class Plugin {
     };
 
     // --- Zentrale Konfigurationsseite ---
-    // Erscheint, sobald mindestens ein Gerät einen aktiven Endpunkt hat
+    // Erscheint, sobald mindestens ein Gerät einen aktiven Endpunkt hat.
     this._addHubFields(properties);
 
     // Dynamisch Variablen-Sektionen erstellen
@@ -1558,31 +1785,54 @@ class Plugin {
     // Leeres Feld am Ende ergänzen (Neue Variable)
     let orderBaseLast = deviceListLength * VARIABLE_ORDER_STEP;
 
-    // Gerätename
-    properties[`new_variable`] = {
-        friendlyName:  this._t('settings.new_variable.name.label'),
-        description:   this._t('settings.new_variable.name.description', { num: deviceListLength }),
+    const slots = this._newSlotCount();
+
+    for (let i = 1; i <= slots; i++) {
+      const slotBase = orderBaseLast + (i - 1) * 3;
+
+      properties[`new_variable_${i}`] = {
+        friendlyName:  slots === 1
+          ? this._t('settings.new_variable.name.label')
+          : this._t('settings.new_variable.name.slot'),
+        description:   this._t('settings.new_variable.name.description',
+          { num: deviceListLength + i - 1 }),
         dataType:      'STRING',
         required:      'false',
-        groupId:       'new_variable',
-        order:         orderBaseLast + 1,
+        groupId:       `new_variable_${i}`,
+        order:         slotBase + 1,
         minimumLength: 0,
         maximumLength: 255,
         currentValue:  '',
       };
 
-      // Geräteart
-      properties[`new_variable_type`] = {
-        friendlyName: this._t('settings.new_variable.type.label'),
-        description:  this._t('settings.new_variable.type.description', { num: deviceListLength }),
+      properties[`new_variable_${i}_type`] = {
+        friendlyName: slots === 1
+          ? this._t('settings.new_variable.type.label')
+          : this._t('settings.new_variable.type.slot'),
+        description:  this._t('settings.new_variable.type.description',
+          { num: deviceListLength + i - 1 }),
         dataType:     'ENUM',
         required:     'false',
-        groupId:      'new_variable',
-        order:        orderBaseLast + 2,
+        groupId:      `new_variable_${i}`,
+        order:        slotBase + 2,
         values:       DEVICE_TYPES.map((type) => this._deviceTypeName(type)),
         defaultValue: this._deviceTypeName('LIGHT'),
         currentValue: this._deviceTypeName('LIGHT'),
       };
+    }
+
+    // Anzahl der Abschnitte, im letzten Abschnitt platziert
+    properties.new_variable_count = {
+      friendlyName: this._t('settings.new_variable.count.label'),
+      description:  this._t('settings.new_variable.count.description'),
+      dataType:     'ENUM',
+      required:     'false',
+      groupId:      `new_variable_${slots}`,
+      order:        orderBaseLast + (slots - 1) * 3 + 3,
+      values:       Array.from({ length: MAX_NEW_SLOTS }, (_, i) => String(i + 1)),
+      defaultValue: '1',
+      currentValue: String(slots),
+    };
 
     // --- Backup & Wiederherstellung (Dropdown bzw. Token/Link) ---
     this._addBackupRestoreFields(properties);
