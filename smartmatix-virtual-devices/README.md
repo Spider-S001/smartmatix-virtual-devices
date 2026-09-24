@@ -219,6 +219,9 @@ Plugin                                  HCU
 | Einstellung | Beschreibung |
 |---|---|
 | **Geräte neu einbinden** | Wenn aktiv, werden beim nächsten Discover alle Geräte erneut an die HCU gemeldet – auch bereits eingebundene |
+| **Zeitzone** | Ortszeit für die Auswertung von Kalenderterminen, siehe [Zeitzone](#zeitzone) |
+| **Tägliche Terminübersicht** | Sendet zur eingestellten Uhrzeit eine Benachrichtigung mit den Terminen des Tages, siehe [Tägliche Terminübersicht](#tägliche-terminübersicht) |
+| **Uhrzeit der Terminübersicht** | Uhrzeit (`HH:MM`) für die tägliche Terminübersicht |
 | **Variable N** | Name des virtuellen Geräts |
 | **Variable N: Geräteart** | Typ des Geräts (Dropdown) |
 | **Variable N: Standard-Status** | Initialwert des Geräts |
@@ -593,6 +596,26 @@ Log vermerkt.
 Der laufende Termin und der gesicherte Wert liegen in `data/calendar-state.json`.
 Dadurch übersteht ein laufender Termin einen Neustart des Plugins: Der gesicherte
 Wert bleibt erhalten und wird am Terminende korrekt zurückgeschrieben.
+
+### Tägliche Terminübersicht
+
+In der allgemeinen Gruppe der Plugin-Einstellungen lässt sich eine tägliche
+Benachrichtigung in der Homematic IP App aktivieren (**Tägliche
+Terminübersicht**) und eine Uhrzeit dafür festlegen (**Uhrzeit der
+Terminübersicht**, Format `HH:MM`). Es gilt die oben eingestellte Zeitzone.
+
+Zur eingestellten Uhrzeit prüft das Plugin, ob an diesem Tag – über alle
+Geräte mit aktivierter Kalendersteuerung hinweg – Termine bzw. Schaltzeiten
+anstehen (inklusive Vor-/Nachlauf). Nur wenn das der Fall ist, wird eine
+**dismissable** Benachrichtigung gesendet; sie listet je Zeile Gerät, Termin
+und Zeitraum (bzw. „ganztägig") auf, chronologisch sortiert und bei sehr
+vielen Terminen auf die ersten 15 begrenzt (Rest als „+N weitere").
+
+Die Benachrichtigung nutzt eine feste Kennung und ersetzt sich dadurch beim
+nächsten Tag selbst, statt sich in der App anzuhäufen. Ohne anstehende
+Termine bleibt sie ganz aus. Ein verpasster Prüfzeitpunkt (z. B. weil das
+Plugin zu diesem Zeitpunkt neu startete) wird beim nächsten Durchlauf
+nachgeholt, statt einen ganzen Tag zu warten.
 
 ---
 

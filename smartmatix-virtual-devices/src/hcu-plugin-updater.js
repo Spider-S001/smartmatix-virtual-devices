@@ -303,6 +303,19 @@ class HcuPluginUpdater {
 
     if (!isNewer(localParsed, remoteParsed)) {
       this._log(`Kein Update verfuegbar.`);
+      // Eine zuvor erstellte "Update verfuegbar"-Benachrichtigung aktiv
+      // entfernen. Das ist noetig, damit sie nicht stehen bleibt, nachdem
+      // das Update tatsaechlich installiert wurde: _lastNotifiedVersion lebt
+      // nur im Arbeitsspeicher dieses Prozesses und weiss nach einem Neustart
+      // (z.B. durch das Update selbst) nichts mehr von einer zuvor erstellten
+      // Benachrichtigung, die in der HCU/App aber weiterhin sichtbar bliebe,
+      // wenn sie nicht explizit geloescht wird. Da die verwendete
+      // userMessageId deterministisch ist, betrifft dies zuverlaessig genau
+      // diese eine Benachrichtigung - unabhaengig davon, in welchem Prozess
+      // sie erstellt wurde. Ist ohnehin keine vorhanden, ist der Aufruf ein
+      // folgenloser No-Op auf Seiten der HCU.
+      this._lastNotifiedVersion = null;
+      this._clearUpdateNotification();
       return;
     }
 
@@ -349,12 +362,47 @@ class HcuPluginUpdater {
   // --- Private Methoden
 
   /**
+   * Liefert die deterministische userMessageId der "Update verfuegbar"-
+   * Benachrichtigung dieses Plugins.
+   *
+   * Bewusst NICHT zufaellig (frueher: crypto.randomUUID() bei jedem Aufruf):
+   * Laut Connect-API-Dokumentation ersetzt die HCU eine Benachrichtigung mit
+   * bereits vorhandener userMessageId, statt eine weitere anzulegen. Eine
+   * feste ID sorgt dafuer, dass ueber Neustarts und wiederholte Checks hinweg
+   * immer nur eine einzige Benachrichtigung existiert - und dass genau diese
+   * eine gezielt wieder entfernt werden kann (_clearUpdateNotification()).
+   */
+  _updateMessageId() {
+    return `hcu-plugin-updater-${this._pluginId}-update-available`;
+  }
+
+  /**
+   * Entfernt eine zuvor erstellte "Update verfuegbar"-Benachrichtigung
+   * dieses Plugins, z.B. weil das Update mittlerweile installiert wurde.
+   */
+  _clearUpdateNotification() {
+    const payload = {
+      pluginId: this._pluginId,
+      id      : crypto.randomUUID(),
+      type    : 'DELETE_USER_MESSAGE_REQUEST',
+      body    : { userMessageId: this._updateMessageId() },
+    };
+
+    try {
+      this._ws.send(JSON.stringify(payload));
+      this._log(`Update-Benachrichtigung entfernt (ID: ${payload.body.userMessageId}), falls vorhanden.`);
+    } catch (err) {
+      this._log(`Fehler beim Entfernen der Benachrichtigung: ${err.message}`);
+    }
+  }
+
+  /**
    * Sendet eine DISMISSIBLE-Benachrichtigung an die HCU.
    * title und message sind Maps nach ISO 639-1.
    * Die Bibliothek liefert immer 'de' und 'en'
    */
   async _sendUpdateNotification(pluginName, localVersion, remoteVersion) {
-    const msgId = `hcu-plugin-updater-${crypto.randomUUID()}`;
+    const msgId = this._updateMessageId();
 
     // Die Connect API erwartet Map<String, String> mit ISO-639-1-Keys.
     const title = {

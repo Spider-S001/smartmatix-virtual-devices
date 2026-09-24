@@ -39,7 +39,7 @@ LABEL de.eq3.hmip.plugin.metadata='\
 {\
   "pluginId": "de.smartmatix.plugin.virtual-devices",\
   "issuer": "Kevin Schipper",\
-  "version": "1.1.2",\
+  "version": "1.2.0",\
   "hcuMinVersion": "1.5.16",\
   "scope": "LOCAL",\
   "friendlyName": {\

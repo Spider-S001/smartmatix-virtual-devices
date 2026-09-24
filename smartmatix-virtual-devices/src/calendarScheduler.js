@@ -399,6 +399,47 @@ function create({ getDevices, getConfig, readValue, writeValue, logger } = {}) {
     return removed;
   }
 
+  /**
+   * Liefert je Gerät die Termine, die "heute" (lokaler Kalendertag) mit
+   * Vor-/Nachlauf wirksam sind bzw. waren/werden. Fuer die taegliche
+   * Terminuebersicht (plugin.js) - liest nur aus dem ohnehin per Tick
+   * gefuellten Zwischenspeicher, loest also keinen eigenen Abruf aus.
+   *
+   * @param   {Date} [now]
+   * @returns {Array<{ deviceId: string, events: Array<{ summary: string, start: Date, end: Date, allDay: boolean }> }>}
+   */
+  function todaysEvents(now = new Date()) {
+    const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const dayEnd   = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+
+    const result = [];
+
+    for (const device of getDevices()) {
+      const config = getConfig(device.deviceId);
+      if (!config?.enabled || !config.url) continue;
+
+      const entry  = cache.get(device.deviceId);
+      const events = entry?.events ?? [];
+      const { lead, trail } = offsets(config);
+
+      // Effektiv wirksamer Zeitraum je Termin (mit Vor-/Nachlauf), gefiltert
+      // auf Ueberschneidung mit dem heutigen Kalendertag.
+      const todays = events
+        .map((e) => ({
+          summary: e.summary,
+          allDay:  e.allDay,
+          start:   new Date(e.start.getTime() - lead),
+          end:     new Date(e.end.getTime() + trail),
+        }))
+        .filter((e) => e.start.getTime() < dayEnd.getTime() && e.end.getTime() > dayStart.getTime())
+        .sort((a, b) => a.start.getTime() - b.start.getTime());
+
+      if (todays.length > 0) result.push({ deviceId: device.deviceId, events: todays });
+    }
+
+    return result;
+  }
+
   /** Aktueller Stand für die Oberfläche. */
   function status(deviceId) {
     const entry  = cache.get(deviceId);
@@ -421,7 +462,7 @@ function create({ getDevices, getConfig, readValue, writeValue, logger } = {}) {
     };
   }
 
-  return { start, stop, tick, refreshDevice, refreshAll, prune, status };
+  return { start, stop, tick, refreshDevice, refreshAll, prune, status, todaysEvents };
 }
 
 module.exports = { create, matchesKeyword, STATE_FILE };

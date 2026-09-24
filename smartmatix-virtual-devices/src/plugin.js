@@ -57,6 +57,20 @@ const BACKUP_GROUP_ORDER = 997;
 // Abstand der Sortiernummern zwischen zwei Variablen-Gruppen.
 const VARIABLE_ORDER_STEP = 10;
 
+// Feste Kennung der taeglichen Terminuebersicht. Nutzt eine statische ID,
+// damit sich die Benachrichtigung selbst ersetzt (siehe Connect-API: eine
+// bereits vorhandene userMessageId wird ersetzt statt dupliziert) und sich
+// gezielt wieder entfernen laesst.
+const DAILY_DIGEST_MSG_ID = 'daily-digest';
+
+// Prüfintervall für die taegliche Terminuebersicht.
+const DAILY_DIGEST_CHECK_MS = 60_000;
+
+// Hoechstzahl an Terminzeilen in der taeglichen Terminuebersicht, bevor der
+// Rest zu "+N weitere" zusammengefasst wird (Benachrichtigungen sollen auf
+// einem Telefon lesbar bleiben).
+const DAILY_DIGEST_MAX_LINES = 15;
+
 // Hoechstzahl der Abschnitte zum gleichzeitigen Anlegen neuer Geraete.
 const MAX_NEW_SLOTS = 10;
 
@@ -167,6 +181,16 @@ class Plugin {
 
     this._syncEndpoints();
     this._calendar.start();
+
+    // Taegliche Terminuebersicht: minuetliche Pruefung, ob die eingestellte
+    // Uhrzeit erreicht ist. Laeuft unabhaengig vom Kalender-Zeitgeber, liest
+    // aber dessen bereits geladene Termine (kein eigener Abruf).
+    this._lastDigestDay = null;
+    this._digestTimer = setInterval(() => {
+      try { this._checkDailyDigest(); }
+      catch (err) { log.error('Terminuebersicht: Fehler bei der Pruefung:', err.message); }
+    }, DAILY_DIGEST_CHECK_MS);
+    if (typeof this._digestTimer.unref === 'function') this._digestTimer.unref();
   }
 
   // ---------------------------------------------------------------------------
@@ -184,6 +208,11 @@ class Plugin {
     this._clearReconnect();
     // Automatischen Update-Check beenden
     this._updater?.stopSchedule();
+    // Taegliche Terminuebersicht beenden
+    if (this._digestTimer) {
+      clearInterval(this._digestTimer);
+      this._digestTimer = null;
+    }
     // Endpunkt-Webserver schliessen
     this._endpointManager?.stop('Plugin beendet');
     if (this._ws) {
@@ -288,6 +317,11 @@ class Plugin {
         this._handleSystemResponse(message);
         break;
 
+      case 'INCLUSION_EVENT':
+        // HCU meldet, welche Geraete tatsaechlich in Homematic IP aufgenommen wurden
+        this._handleInclusionEvent(message);
+        break;
+
       case 'CONFIG_UPDATE_REQUEST':
         // Benutzer hat Konfiguration in der HCU-Oberfläche gespeichert
         this._handleConfigUpdateRequest(message);
@@ -373,9 +407,7 @@ class Plugin {
       const updatedDevice = devices.getById(deviceId);
 
       if (updatedDevice) {
-        // Nur schreiben, wenn sich tatsächlich etwas geändert hat. Schickt die
-        // HCU denselben Wert erneut, spart das einen Schreibvorgang – bei
-        // vielen Geräten summiert sich das auf dem Datenträger der HCU.
+        // Nur schreiben, wenn sich tatsächlich etwas geändert hat
         const changes = mappings.diffFeatures(before, updatedDevice.features);
 
         if (changes.length === 0) {
@@ -507,7 +539,28 @@ class Plugin {
       this._calendar?.refreshAll().catch((err) =>
         log.error('Kalender nach Zeitzonenwechsel nicht abrufbar:', err.message));
     }
- 
+
+    // Taegliche Terminuebersicht
+    const dailyDigestEnabled = properties?.dailyDigestEnabled;
+    if (dailyDigestEnabled !== undefined) {
+      const wanted = dailyDigestEnabled === true || dailyDigestEnabled === 'true';
+      if (wanted !== (this._config.dailyDigestEnabled === true)) {
+        this._config.dailyDigestEnabled = wanted;
+        configStore.save(this._config);
+        // Neu eingeschaltet oder Uhrzeit geaendert > heute erneut pruefen
+        // (auch wenn die Uhrzeit fuer heute schon vorbei ist).
+        this._lastDigestDay = null;
+      }
+    }
+
+    const dailyDigestTime = properties?.dailyDigestTime;
+    if (dailyDigestTime !== undefined && this._isValidDigestTime(dailyDigestTime)
+        && dailyDigestTime !== this._config.dailyDigestTime) {
+      this._config.dailyDigestTime = dailyDigestTime;
+      configStore.save(this._config);
+      this._lastDigestDay = null;
+    }
+
     // Felder aus Einstellungsseite abarbeiten und Geräte speichern, updaten oder löschen
     deviceList.forEach((device, index) => {
       const num    = index + 1;
@@ -659,6 +712,50 @@ class Plugin {
     devicesStore.markAsIncluded(devicesToReport.map(d => d.deviceId));
     devices.reload();
     log.info(`DISCOVER_RESPONSE gesendet mit ${devicesToReport.length} Geraet(en).`);
+  }
+
+  /**
+   * INCLUSION_EVENT > wertet aus, welche Geraete die HCU tatsaechlich in
+   * Homematic IP aufgenommen hat.
+   *
+   * markAsIncluded() nach der DISCOVER_RESPONSE ist optimistisch: Es geht
+   * davon aus, dass die HCU alle gemeldeten Geraete auch aufnimmt. Bei sehr
+   * vielen virtuellen Geraeten kann die HCU jedoch ein Limit erreichen
+   * (z.B. Fehlercode 4006 MAXIMUM_GLOBAL_DEVICE_LIMIT_REACHED) und einzelne
+   * Geraete verwerfen, ohne das dem Plugin separat mitzuteilen. Ohne diesen
+   * Abgleich blieben solche Geraete faelschlich als "bereits aufgenommen"
+   * markiert und wuerden bei einem erneuten Reinkludieren nie wieder
+   * gemeldet.
+   *
+   * Als Reaktion auf dieses Ereignis ist laut Connect-API-Dokumentation ein
+   * (unaufgefordertes) STATUS_RESPONSE mit dem Status aller tatsaechlich
+   * aufgenommenen Geraete Pflicht.
+   */
+  _handleInclusionEvent(message) {
+    const includedIds = new Set(message?.body?.deviceIds ?? []);
+    log.info(`INCLUSION_EVENT: ${includedIds.size} Geraet(e) laut HCU tatsaechlich aufgenommen.`);
+
+    const all = devices.getAll();
+    const missing = all.filter((d) => d.alreadyIncluded && !includedIds.has(d.deviceId));
+
+    for (const device of missing) {
+      devicesStore.update(device.deviceId, { ...device, alreadyIncluded: false });
+      log.warn(`Geraet "${device.deviceId}" (${device.friendlyName}) laut HCU NICHT aufgenommen `
+        + '- wird beim naechsten Reinkludieren erneut gemeldet.');
+    }
+
+    if (missing.length > 0) devices.reload();
+
+    const includedDevices = devices.getAll().filter((d) => includedIds.has(d.deviceId));
+    this._send({
+      id:       uuidv4(),
+      pluginId: this.pluginId,
+      type:     'STATUS_RESPONSE',
+      body: {
+        success: true,
+        devices: devices.toHcuDevices(includedDevices),
+      },
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -955,6 +1052,121 @@ class Plugin {
 
     timezones.apply(zone);
     log.info(`Zeitzone: ${zone} (aktuell ${-new Date().getTimezoneOffset() / 60} h zu UTC)`);
+  }
+
+  /**
+   * Prüft, ob ein Wert dem Format "HH:MM" (00–23:00–59) entspricht.
+   * @param   {*} value
+   * @returns {boolean}
+   */
+  _isValidDigestTime(value) {
+    return typeof value === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+  }
+
+  /**
+   * Minütliche Prüfung für die tägliche Terminübersicht: ist die
+   * eingeschaltete Funktion aktiv, die eingestellte Uhrzeit (lokal, gemäß
+   * Zeitzoneneinstellung – process.env.TZ ist bereits über _applyTimezone()
+   * gesetzt) erreicht und wurde heute noch keine Übersicht gesendet?
+   *
+   * Bewusst mit "Aufholen" wie beim Kalenderabruf: Ist die Uhrzeit beim
+   * Start bzw. nach einer Änderung der Einstellung schon vorbei, wird beim
+   * nächsten Durchlauf trotzdem sofort gesendet, statt einen Tag zu warten.
+   */
+  _checkDailyDigest(now = new Date()) {
+    if (this._config.dailyDigestEnabled !== true) return;
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
+
+    const dayKey = now.toDateString();
+    if (this._lastDigestDay === dayKey) return;
+
+    const time = this._isValidDigestTime(this._config.dailyDigestTime)
+      ? this._config.dailyDigestTime
+      : '08:00';
+    const [targetHour, targetMinute] = time.split(':').map(Number);
+    const targetMinutes = targetHour * 60 + targetMinute;
+    const nowMinutes    = now.getHours() * 60 + now.getMinutes();
+
+    if (nowMinutes < targetMinutes) return;
+
+    this._lastDigestDay = dayKey;
+    this._sendDailyDigest(now);
+  }
+
+  /**
+   * Stellt die heutigen Termine aller Kalender-Geräte zusammen und sendet
+   * bei Bedarf eine DISMISSIBLE-Benachrichtigung. Ohne anstehende Termine
+   * wird nichts gesendet (und eine evtl. vorherige Übersicht – sollte sie
+   * aus einem fruehereren Aufruf noch offen sein – bleibt unberuehrt, da sie
+   * ohnehin dismissable ist und sich am naechsten Tag durch die gleiche
+   * userMessageId selbst ersetzt).
+   */
+  _sendDailyDigest(now = new Date()) {
+    const groups = this._calendar?.todaysEvents(now) ?? [];
+    if (groups.length === 0) {
+      log.info('Terminuebersicht: heute keine Termine, keine Benachrichtigung gesendet.');
+      return;
+    }
+
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const formatTime = (date) => `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+
+    // Termine ueber alle Geraete hinweg chronologisch zusammenfassen.
+    const allEvents = [];
+    for (const group of groups) {
+      const device = devices.getById(group.deviceId);
+      const name   = device?.friendlyName ?? group.deviceId;
+      for (const ev of group.events) allEvents.push({ ...ev, deviceName: name });
+    }
+    allEvents.sort((a, b) => a.start.getTime() - b.start.getTime());
+
+    const shown    = allEvents.slice(0, DAILY_DIGEST_MAX_LINES);
+    const overflow = allEvents.length - shown.length;
+
+    const buildText = (lang) => {
+      const allDayLabel = t(lang, 'dailydigest.allday');
+      const lines = shown.map((ev) => {
+        const when = ev.allDay ? allDayLabel : `${formatTime(ev.start)}–${formatTime(ev.end)}`;
+        return `${ev.deviceName}: ${ev.summary || '–'} (${when})`;
+      });
+      if (overflow > 0) {
+        lines.push(t(lang, 'dailydigest.more').replace('{count}', String(overflow)));
+      }
+      return lines.join('\n');
+    };
+
+    const title = {
+      de: t('de', 'dailydigest.title'),
+      en: t('en', 'dailydigest.title'),
+    };
+    const message = {
+      de: buildText('de'),
+      en: buildText('en'),
+    };
+
+    // Fallback fuer eine dritte, in der HCU eingestellte Sprache (zeigt den
+    // englischen Text), analog zu den anderen Benachrichtigungen im Plugin.
+    if (this._lang && this._lang !== 'de' && this._lang !== 'en') {
+      title[this._lang]   = title.en;
+      message[this._lang] = message.en;
+    }
+
+    this._send({
+      id:       uuidv4(),
+      pluginId: this.pluginId,
+      type:     'CREATE_USER_MESSAGE_REQUEST',
+      body: {
+        userMessageId:   DAILY_DIGEST_MSG_ID,
+        behaviorType:    'DISMISSIBLE',
+        messageCategory: 'INFO',
+        timestamp:       Date.now(),
+        title,
+        message,
+      },
+    });
+
+    log.info(`Terminuebersicht gesendet: ${allEvents.length} Termin(e) `
+      + `bei ${groups.length} Geraet(en).`);
   }
 
   _syncEndpoints() {
@@ -1617,10 +1829,11 @@ class Plugin {
 
       for(let i = 0; i < varCount; i++) {
         let num  = i + 1;
-        const nm = deviceListForNames[i]?.friendlyName;
+        const dev = deviceListForNames[i];
+        const nm  = dev?.friendlyName;
         groups[`variable_${num}`] = {
           friendlyName: nm
-            ? this._t('group.variable.name', { num, name: nm })
+            ? this._t('group.variable.name', { num, name: nm, type: this._deviceTypeName(dev.deviceType) })
             : this._t('group.variable.unnamed', { num }),
           description:  this._t('group.variable.description', { name: nm ?? '' }),
           order:        2 + i,
@@ -1702,6 +1915,32 @@ class Plugin {
       defaultValue: timezones.toLabel(timezones.DEFAULT_TIMEZONE),
       currentValue: timezones.toLabel(
         timezones.isKnown(this._config.timezone) ? this._config.timezone : timezones.DEFAULT_TIMEZONE),
+    };
+
+    // --- Taegliche Terminuebersicht ---
+    properties.dailyDigestEnabled = {
+      friendlyName: this._t('settings.dailydigest.enabled.label'),
+      description:  this._t('settings.dailydigest.enabled.description'),
+      dataType:     'BOOLEAN',
+      required:     'false',
+      groupId:      'general',
+      order:        5,
+      defaultValue: 'false',
+      currentValue: this._config.dailyDigestEnabled === true ? 'true' : 'false',
+    };
+
+    properties.dailyDigestTime = {
+      friendlyName:  this._t('settings.dailydigest.time.label'),
+      description:   this._t('settings.dailydigest.time.description'),
+      dataType:      'STRING',
+      required:      'false',
+      groupId:       'general',
+      order:         6,
+      pattern:       '^([01]\\d|2[0-3]):[0-5]\\d$',
+      minimumLength: 5,
+      maximumLength: 5,
+      defaultValue:  '08:00',
+      currentValue:  this._isValidDigestTime(this._config.dailyDigestTime) ? this._config.dailyDigestTime : '08:00',
     };
 
     // --- Zentrale Konfigurationsseite ---

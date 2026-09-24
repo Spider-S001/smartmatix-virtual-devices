@@ -1,6 +1,6 @@
 {
   "name": "smartmatix-virtual-devices",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "description": "Ein Plugin zum Erstellen und Bearbeiten von virtuellen Geräten als Variablen.",
   "main": "src/index.js",
   "scripts": {
