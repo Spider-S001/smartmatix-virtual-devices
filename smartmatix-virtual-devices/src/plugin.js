@@ -27,7 +27,6 @@ const configStore          = require('./configStore');
 const devicesStore         = require('./devicesStore');
 const { DEVICE_FEATURES }  = require('../constants/device_constants.js');
 const timezones            = require('../constants/timezones.js');
-const { HcuPluginUpdater } = require('./hcu-plugin-updater');
 const backup               = require('./backup-plugin-data');
 const dataEndpoint         = require('./dataEndpoint');
 const mappings             = require('./mappings');
@@ -41,10 +40,6 @@ const RECONNECT_BASE_MS = 5_000;
 const RECONNECT_MAX_MS  = 60_000;
 const RECONNECT_FACTOR  = 1.5;
 
-// Update-Check (hcu-plugin-updater)
-const REPO_URL    = 'https://github.com/Spider-S001/smartmatix-virtual-devices';
-const PLUGIN_NAME = 'SmartMatix Virtual Devices';
-
 // Port des temporären Backup-/Restore-Webservers.
 const BACKUP_PORT = 8744;
 
@@ -57,18 +52,16 @@ const BACKUP_GROUP_ORDER = 997;
 // Abstand der Sortiernummern zwischen zwei Variablen-Gruppen.
 const VARIABLE_ORDER_STEP = 10;
 
-// Feste Kennung der taeglichen Terminuebersicht. Nutzt eine statische ID,
-// damit sich die Benachrichtigung selbst ersetzt (siehe Connect-API: eine
-// bereits vorhandene userMessageId wird ersetzt statt dupliziert) und sich
-// gezielt wieder entfernen laesst.
+// Feste Kennung der täglichen Terminübersicht. Die HCU ersetzt eine
+// Benachrichtigung mit gleicher userMessageId, es bleibt also immer nur
+// die aktuelle Übersicht bestehen.
 const DAILY_DIGEST_MSG_ID = 'daily-digest';
 
-// Prüfintervall für die taegliche Terminuebersicht.
+// Intervall, in dem geprüft wird, ob die Uhrzeit der Terminübersicht erreicht ist.
 const DAILY_DIGEST_CHECK_MS = 60_000;
 
-// Hoechstzahl an Terminzeilen in der taeglichen Terminuebersicht, bevor der
-// Rest zu "+N weitere" zusammengefasst wird (Benachrichtigungen sollen auf
-// einem Telefon lesbar bleiben).
+// Höchstzahl der Terminzeilen in der Terminübersicht. Weitere Termine werden
+// zu einer Zeile "+N weitere" zusammengefasst.
 const DAILY_DIGEST_MAX_LINES = 15;
 
 // Hoechstzahl der Abschnitte zum gleichzeitigen Anlegen neuer Geraete.
@@ -119,9 +112,6 @@ class Plugin {
 
     // Kennung der laufenden Systemzustandsabfrage
     this._systemStateRequestId = null;
-
-    // Update-Checker
-    this._updater = null;
 
     // Backup-/Restore-Manager (backup-plugin-data).
     this._backupManager = backup.create({
@@ -182,9 +172,8 @@ class Plugin {
     this._syncEndpoints();
     this._calendar.start();
 
-    // Taegliche Terminuebersicht: minuetliche Pruefung, ob die eingestellte
-    // Uhrzeit erreicht ist. Laeuft unabhaengig vom Kalender-Zeitgeber, liest
-    // aber dessen bereits geladene Termine (kein eigener Abruf).
+    // Tägliche Terminübersicht: prüft minütlich, ob die eingestellte Uhrzeit
+    // erreicht ist. Nutzt die bereits geladenen Termine des Kalenders.
     this._lastDigestDay = null;
     this._digestTimer = setInterval(() => {
       try { this._checkDailyDigest(); }
@@ -206,8 +195,6 @@ class Plugin {
     log.info('Plugin wird beendet...');
     this._stopping = true;
     this._clearReconnect();
-    // Automatischen Update-Check beenden
-    this._updater?.stopSchedule();
     // Taegliche Terminuebersicht beenden
     if (this._digestTimer) {
       clearInterval(this._digestTimer);
@@ -252,12 +239,6 @@ class Plugin {
   _onOpen() {
     log.info('WebSocket verbunden.');
     this._reconnectDelay = RECONNECT_BASE_MS; // Reset nach Erfolg
-
-    // Update-Checker starten
-    if (!this._updater) {
-      this._updater = new HcuPluginUpdater(this._ws, this.pluginId, { language: this._lang });
-      this._updater.startSchedule(REPO_URL, PLUGIN_NAME);
-    }
 
     // Systemzustand anfordern, um die Kennungen der HCU den eigenen Geraeten
     // zuzuordnen. Erst danach lassen sich Umbenennungen aus der App zuordnen.
@@ -318,7 +299,7 @@ class Plugin {
         break;
 
       case 'INCLUSION_EVENT':
-        // HCU meldet, welche Geraete tatsaechlich in Homematic IP aufgenommen wurden
+        // Die HCU meldet die tatsächlich aufgenommenen Geräte
         this._handleInclusionEvent(message);
         break;
 
@@ -407,7 +388,9 @@ class Plugin {
       const updatedDevice = devices.getById(deviceId);
 
       if (updatedDevice) {
-        // Nur schreiben, wenn sich tatsächlich etwas geändert hat
+        // Nur schreiben, wenn sich tatsächlich etwas geändert hat. Schickt die
+        // HCU denselben Wert erneut, spart das einen Schreibvorgang – bei
+        // vielen Geräten summiert sich das auf dem Datenträger der HCU.
         const changes = mappings.diffFeatures(before, updatedDevice.features);
 
         if (changes.length === 0) {
@@ -437,20 +420,24 @@ class Plugin {
    * STATUS_REQUEST → aktuellen Gerätestatus liefern
    */
   _handleStatusRequest(message) {
-    const { deviceId } = message.body ?? {};
-    log.info(`STATUS_REQUEST für Geraet: ${deviceId}`);
+    const requestedIds = message.body?.deviceIds;
+    const all          = devices.getAll();
 
-    const device  = devices.getById(deviceId);
-    const success = device != null;
+    // Ohne Angabe von deviceIds sind alle Geräte gemeint
+    const selected = Array.isArray(requestedIds) && requestedIds.length > 0
+      ? all.filter((d) => requestedIds.includes(d.deviceId))
+      : all;
+
+    log.info(`STATUS_REQUEST: ${selected.length} Geraet(e) angefragt.`);
 
     const response = {
       id:       message.id,
       pluginId: this.pluginId,
       type:     'STATUS_RESPONSE',
       body: {
-        success,
+        success: true,
         // Interne Felder (u.a. Endpunkt-Zugangsdaten) entfernen
-        devices: success ? [devices.toHcuDevice(device)] : [],
+        devices: devices.toHcuDevices(selected),
       },
     };
     this._send(response);
@@ -540,15 +527,14 @@ class Plugin {
         log.error('Kalender nach Zeitzonenwechsel nicht abrufbar:', err.message));
     }
 
-    // Taegliche Terminuebersicht
+    // Tägliche Terminübersicht
     const dailyDigestEnabled = properties?.dailyDigestEnabled;
     if (dailyDigestEnabled !== undefined) {
       const wanted = dailyDigestEnabled === true || dailyDigestEnabled === 'true';
       if (wanted !== (this._config.dailyDigestEnabled === true)) {
         this._config.dailyDigestEnabled = wanted;
         configStore.save(this._config);
-        // Neu eingeschaltet oder Uhrzeit geaendert > heute erneut pruefen
-        // (auch wenn die Uhrzeit fuer heute schon vorbei ist).
+        // Zurücksetzen, damit heute erneut geprüft wird
         this._lastDigestDay = null;
       }
     }
@@ -715,21 +701,15 @@ class Plugin {
   }
 
   /**
-   * INCLUSION_EVENT > wertet aus, welche Geraete die HCU tatsaechlich in
-   * Homematic IP aufgenommen hat.
+   * Verarbeitet das INCLUSION_EVENT der HCU.
    *
-   * markAsIncluded() nach der DISCOVER_RESPONSE ist optimistisch: Es geht
-   * davon aus, dass die HCU alle gemeldeten Geraete auch aufnimmt. Bei sehr
-   * vielen virtuellen Geraeten kann die HCU jedoch ein Limit erreichen
-   * (z.B. Fehlercode 4006 MAXIMUM_GLOBAL_DEVICE_LIMIT_REACHED) und einzelne
-   * Geraete verwerfen, ohne das dem Plugin separat mitzuteilen. Ohne diesen
-   * Abgleich blieben solche Geraete faelschlich als "bereits aufgenommen"
-   * markiert und wuerden bei einem erneuten Reinkludieren nie wieder
-   * gemeldet.
+   * Geräte, die als aufgenommen markiert sind, in der Liste der HCU aber
+   * fehlen (z.B. weil die HCU ihr Gerätelimit erreicht hat), werden wieder als
+   * nicht aufgenommen markiert und beim nächsten Reinkludieren erneut gemeldet.
+   * Beantwortet wird das Ereignis mit einer STATUS_RESPONSE für alle
+   * aufgenommenen Geräte.
    *
-   * Als Reaktion auf dieses Ereignis ist laut Connect-API-Dokumentation ein
-   * (unaufgefordertes) STATUS_RESPONSE mit dem Status aller tatsaechlich
-   * aufgenommenen Geraete Pflicht.
+   * @param {object} message – INCLUSION_EVENT mit body.deviceIds
    */
   _handleInclusionEvent(message) {
     const includedIds = new Set(message?.body?.deviceIds ?? []);
@@ -762,11 +742,6 @@ class Plugin {
   //  Backup / Restore
   // ---------------------------------------------------------------------------
 
-  /**
-   * Übersetzt einen Schlüssel und ersetzt Platzhalter der Form {name}.
-   * @param {string} key    – Schlüssel aus lang/localization.json
-   * @param {object} [vars] – Werte für die Platzhalter
-   */
   /**
    * Lesbarer Name einer Geräteart, wie sie in der Homematic IP App heißt.
    * Fehlt eine Übersetzung, bleibt der technische Name stehen.
@@ -813,6 +788,11 @@ class Plugin {
     }));
   }
 
+  /**
+   * Übersetzt einen Schlüssel und ersetzt Platzhalter der Form {name}.
+   * @param {string} key    – Schlüssel aus lang/localization.json
+   * @param {object} [vars] – Werte für die Platzhalter
+   */
   _t(key, vars = {}) {
     return Object.entries(vars).reduce(
       (text, [name, value]) => text.replaceAll(`{${name}}`, String(value)),
@@ -1004,10 +984,6 @@ class Plugin {
   // ---------------------------------------------------------------------------
 
   /**
-   * Übergibt die aktuelle Geräteliste an den Endpunkt-Manager.
-   * Startet oder stoppt dadurch den Webserver.
-   */
-  /**
    * Zugangsdaten der Sammelseite. Werden beim ersten aktiven Endpunkt erzeugt
    * und in der config.json abgelegt, damit die Adresse dauerhaft gleich bleibt.
    */
@@ -1032,10 +1008,6 @@ class Plugin {
   }
 
   /**
-   * Übernimmt die eingestellte Zeitzone in den Prozess.
-   * Node wertet process.env.TZ bei jeder Datumsoperation neu aus.
-   */
-  /**
    * Anzahl der Abschnitte, die zum Anlegen neuer Geräte angezeigt werden.
    * @returns {number} 1 bis MAX_NEW_SLOTS
    */
@@ -1045,6 +1017,10 @@ class Plugin {
     return Math.min(Math.max(n, 1), MAX_NEW_SLOTS);
   }
 
+  /**
+   * Übernimmt die eingestellte Zeitzone in den Prozess.
+   * Node wertet process.env.TZ bei jeder Datumsoperation neu aus.
+   */
   _applyTimezone() {
     const zone = timezones.isKnown(this._config.timezone)
       ? this._config.timezone
@@ -1064,14 +1040,12 @@ class Plugin {
   }
 
   /**
-   * Minütliche Prüfung für die tägliche Terminübersicht: ist die
-   * eingeschaltete Funktion aktiv, die eingestellte Uhrzeit (lokal, gemäß
-   * Zeitzoneneinstellung – process.env.TZ ist bereits über _applyTimezone()
-   * gesetzt) erreicht und wurde heute noch keine Übersicht gesendet?
+   * Sendet die Terminübersicht, sobald die eingestellte Uhrzeit (in der
+   * eingestellten Zeitzone) erreicht ist und für den heutigen Tag noch keine
+   * Übersicht gesendet wurde. Liegt die Uhrzeit bereits hinter uns, etwa nach
+   * einem Neustart, wird sie beim nächsten Aufruf nachgeholt.
    *
-   * Bewusst mit "Aufholen" wie beim Kalenderabruf: Ist die Uhrzeit beim
-   * Start bzw. nach einer Änderung der Einstellung schon vorbei, wird beim
-   * nächsten Durchlauf trotzdem sofort gesendet, statt einen Tag zu warten.
+   * @param {Date} [now] – aktueller Zeitpunkt
    */
   _checkDailyDigest(now = new Date()) {
     if (this._config.dailyDigestEnabled !== true) return;
@@ -1094,12 +1068,10 @@ class Plugin {
   }
 
   /**
-   * Stellt die heutigen Termine aller Kalender-Geräte zusammen und sendet
-   * bei Bedarf eine DISMISSIBLE-Benachrichtigung. Ohne anstehende Termine
-   * wird nichts gesendet (und eine evtl. vorherige Übersicht – sollte sie
-   * aus einem fruehereren Aufruf noch offen sein – bleibt unberuehrt, da sie
-   * ohnehin dismissable ist und sich am naechsten Tag durch die gleiche
-   * userMessageId selbst ersetzt).
+   * Stellt die Termine des Tages aller Kalender-Geräte zusammen und sendet sie
+   * als schließbare Benachrichtigung. Ohne Termine wird nichts gesendet.
+   *
+   * @param {Date} [now] – Tag, für den die Übersicht erstellt wird
    */
   _sendDailyDigest(now = new Date()) {
     const groups = this._calendar?.todaysEvents(now) ?? [];
@@ -1110,8 +1082,15 @@ class Plugin {
 
     const pad2 = (n) => String(n).padStart(2, '0');
     const formatTime = (date) => `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+    // Datumsformat: Deutsch TT.MM.JJJJ, sonst JJJJ-MM-TT
+    const formatDate = (date, lang) => {
+      const d = pad2(date.getDate());
+      const m = pad2(date.getMonth() + 1);
+      const y = date.getFullYear();
+      return lang === 'de' ? `${d}.${m}.${y}` : `${y}-${m}-${d}`;
+    };
 
-    // Termine ueber alle Geraete hinweg chronologisch zusammenfassen.
+    // Termine aller Geräte chronologisch zusammenführen
     const allEvents = [];
     for (const group of groups) {
       const device = devices.getById(group.deviceId);
@@ -1136,16 +1115,15 @@ class Plugin {
     };
 
     const title = {
-      de: t('de', 'dailydigest.title'),
-      en: t('en', 'dailydigest.title'),
+      de: t('de', 'dailydigest.title').replace('{date}', formatDate(now, 'de')),
+      en: t('en', 'dailydigest.title').replace('{date}', formatDate(now, 'en')),
     };
     const message = {
       de: buildText('de'),
       en: buildText('en'),
     };
 
-    // Fallback fuer eine dritte, in der HCU eingestellte Sprache (zeigt den
-    // englischen Text), analog zu den anderen Benachrichtigungen im Plugin.
+    // Weitere HCU-Sprachen erhalten den englischen Text
     if (this._lang && this._lang !== 'de' && this._lang !== 'en') {
       title[this._lang]   = title.en;
       message[this._lang] = message.en;
@@ -1169,6 +1147,10 @@ class Plugin {
       + `bei ${groups.length} Geraet(en).`);
   }
 
+  /**
+   * Übergibt die aktuelle Geräteliste an den Endpunkt-Manager.
+   * Startet oder stoppt dadurch den Webserver.
+   */
   _syncEndpoints() {
     try {
       const all       = devices.getAll();
@@ -1501,13 +1483,6 @@ class Plugin {
   }
 
   /**
-   * Wendet einen angelieferten Datensatz auf ein Gerät an.
-   *
-   * @param   {string} deviceId
-   * @param   {object} incoming – { name: wert, … }
-   * @returns {{ applied: Array, ignored: Array }}
-   */
-  /**
    * Fordert den Zustand des Homematic IP Systems an.
    *
    * Aus der Antwort wird die Zuordnung zwischen den Kennungen der HCU und den
@@ -1676,6 +1651,13 @@ class Plugin {
     return null;
   }
 
+  /**
+   * Wendet einen angelieferten Datensatz auf ein Gerät an.
+   *
+   * @param   {string} deviceId
+   * @param   {object} incoming – { name: wert, … }
+   * @returns {{ applied: Array, ignored: Array }}
+   */
   _applyIncomingData(deviceId, incoming) {
     const lang   = this._lang;
     const device = devices.getById(deviceId);
@@ -1726,16 +1708,6 @@ class Plugin {
   }
 
   /**
-   * Ergänzt die Endpunkt-Felder einer Variablen-Gruppe:
-   *   • Checkbox zum Aktivieren
-   *   • bei aktivem Endpunkt zusätzlich Passwort (READONLY) und Link
-   *
-   * @param {object} properties – Properties-Objekt für CONFIG_TEMPLATE_RESPONSE
-   * @param {object} device     – Geräteobjekt aus der devices.json
-   * @param {number} num        – laufende Nummer der Variablen (1-basiert)
-   * @param {number} orderBase  – Basis-Sortiernummer dieser Gruppe
-   */
-  /**
    * Ergänzt Passwort und Link der zentralen Konfigurationsseite in der
    * allgemeinen Gruppe. Ohne aktiven Endpunkt entfallen beide Felder.
    */
@@ -1763,6 +1735,16 @@ class Plugin {
     };
   }
 
+  /**
+   * Ergänzt die Endpunkt-Felder einer Variablen-Gruppe:
+   *   • Checkbox zum Aktivieren
+   *   • bei aktivem Endpunkt zusätzlich Passwort (READONLY) und Link
+   *
+   * @param {object} properties – Properties-Objekt für CONFIG_TEMPLATE_RESPONSE
+   * @param {object} device     – Geräteobjekt aus der devices.json
+   * @param {number} num        – laufende Nummer der Variablen (1-basiert)
+   * @param {number} orderBase  – Basis-Sortiernummer dieser Gruppe
+   */
   _addEndpointFields(properties, device, num, orderBase) {
     const enabled = device.endpointEnabled === true;
 
@@ -2080,10 +2062,6 @@ class Plugin {
   }
 
   /**
-   * Übermittelt alle im Plugin gespeicherten Status-Zustände an die HCU.
-   * Benötigt für _onOpen(), da Werte beim HCU-Neustart zurückgesetzt werden.
-   */
-  /**
    * Sendet den Zustand eines einzelnen Geräts als STATUS_EVENT an die HCU.
    * @param {object} device – Geräteobjekt aus der devices.json
    */
@@ -2100,6 +2078,10 @@ class Plugin {
     });
   }
 
+  /**
+   * Übermittelt alle im Plugin gespeicherten Status-Zustände an die HCU.
+   * Benötigt für _onOpen(), da Werte beim HCU-Neustart zurückgesetzt werden.
+   */
   _sendAllStatusEvents() {
     const allDevices = devices.getAll();
     allDevices.forEach(device => {

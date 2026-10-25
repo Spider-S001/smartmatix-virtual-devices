@@ -24,7 +24,7 @@ const log      = require('./logger');
 const calendar = require('./calendar');
 
 const TICK_MS         = 60_000;      // Prüfung auf Terminwechsel
-const LOOKAHEAD_HOURS = 36;          // Zeitfenster, das beim Abruf geladen wird
+const LOOKAHEAD_DAYS  = 366;         // Zeitfenster, das beim Abruf geladen wird
 const MAX_LEAD_HOURS  = 24;          // Obergrenze des Vorlaufs, erweitert das Fenster
 const STATE_VERSION   = 1;
 
@@ -166,7 +166,7 @@ function create({ getDevices, getConfig, readValue, writeValue, logger } = {}) {
     // Das Fenster beginnt um den moeglichen Vorlauf frueher, damit ein Termin,
     // dessen Vorlauf bereits laeuft, beim Abruf noch gefunden wird.
     const from = new Date(Date.now() - MAX_LEAD_HOURS * 3600_000);
-    const to   = new Date(Date.now() + LOOKAHEAD_HOURS * 3600_000);
+    const to   = new Date(Date.now() + LOOKAHEAD_DAYS * 86_400_000);
 
     const result = await calendar.loadEvents(config.url, from, to);
 
@@ -203,7 +203,7 @@ function create({ getDevices, getConfig, readValue, writeValue, logger } = {}) {
     }
 
     const from = new Date(Date.now() - MAX_LEAD_HOURS * 3600_000);
-    const to   = new Date(Date.now() + LOOKAHEAD_HOURS * 3600_000);
+    const to   = new Date(Date.now() + LOOKAHEAD_DAYS * 86_400_000);
     let done = 0;
 
     for (const [url, deviceIds] of byUrl) {
@@ -400,12 +400,11 @@ function create({ getDevices, getConfig, readValue, writeValue, logger } = {}) {
   }
 
   /**
-   * Liefert je Gerät die Termine, die "heute" (lokaler Kalendertag) mit
-   * Vor-/Nachlauf wirksam sind bzw. waren/werden. Fuer die taegliche
-   * Terminuebersicht (plugin.js) - liest nur aus dem ohnehin per Tick
-   * gefuellten Zwischenspeicher, loest also keinen eigenen Abruf aus.
+   * Liefert je Gerät die Termine, die am lokalen Kalendertag von `now`
+   * wirksam sind, einschließlich Vor- und Nachlauf. Liest nur aus dem
+   * Zwischenspeicher und ruft keinen Kalender ab.
    *
-   * @param   {Date} [now]
+   * @param   {Date} [now] – Zeitpunkt innerhalb des gewünschten Tags
    * @returns {Array<{ deviceId: string, events: Array<{ summary: string, start: Date, end: Date, allDay: boolean }> }>}
    */
   function todaysEvents(now = new Date()) {
@@ -422,8 +421,8 @@ function create({ getDevices, getConfig, readValue, writeValue, logger } = {}) {
       const events = entry?.events ?? [];
       const { lead, trail } = offsets(config);
 
-      // Effektiv wirksamer Zeitraum je Termin (mit Vor-/Nachlauf), gefiltert
-      // auf Ueberschneidung mit dem heutigen Kalendertag.
+      // Wirksamer Zeitraum je Termin (mit Vor- und Nachlauf), beschränkt auf
+      // Termine, die den Kalendertag überschneiden
       const todays = events
         .map((e) => ({
           summary: e.summary,
@@ -449,12 +448,15 @@ function create({ getDevices, getConfig, readValue, writeValue, logger } = {}) {
     return {
       fetchedAt: entry?.fetchedAt ?? null,
       error:     entry?.error ?? null,
-      upcoming:  (entry?.events ?? []).slice(0, 10).map((e) => ({
-        summary: e.summary,
-        start:   e.start.toISOString(),
-        end:     e.end.toISOString(),
-        allDay:  e.allDay,
-      })),
+      upcoming:  (entry?.events ?? [])
+        .filter((e) => e.end.getTime() > Date.now())
+        .slice(0, 10)
+        .map((e) => ({
+          summary: e.summary,
+          start:   e.start.toISOString(),
+          end:     e.end.toISOString(),
+          allDay:  e.allDay,
+        })),
       active: active
         ? { summary: active.summary, target: active.target,
             applied: active.applied, previous: active.previous }

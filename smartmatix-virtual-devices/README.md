@@ -19,7 +19,6 @@ Ein Plugin für die **Homematic IP Home Control Unit (HCU)**, das es ermöglicht
 - **Automatische Wiederverbindung** – Exponential Backoff bei Verbindungsabbruch
 - **Gerät neu einbinden** – verlorene Geräte können über die `reincludeDevices`-Einstellung erneut an die HCU gemeldet werden
 - **Backup & Wiederherstellung** – Variablen und Einstellungen direkt aus der HCUWeb als JSON sichern und wieder einspielen
-- **Automatischer Update-Check** – prüft täglich auf neue Releases und meldet sie als Benachrichtigung in der Homematic IP App
 - **Daten-Endpunkt je Gerät** – pro virtuellem Gerät eine eigene, passwortgeschützte Schnittstelle mit fester Adresse
 - **Datenzuordnung** – externe Werte per Regel auf Homematic IP Attribute abbilden, mit vollständigem Feature-Katalog der Connect API
 - **Ausgehende Aufrufe** – bei Zustandsänderungen eines Geräts eine frei wählbare Adresse per GET aufrufen
@@ -28,6 +27,10 @@ Ein Plugin für die **Homematic IP Home Control Unit (HCU)**, das es ermöglicht
 
 ![Die Auswahl der Gerätetypen im Plugin](/Screenshots/Geraeteauswahl.png "Die Auswahl der Gerätetypen im Plugin")
 
+![Die Konfiguration der API für ein Gerät](/Screenshots/API-Konfiguration-Smartmatix-Virtual-Devices.jpg "Die Konfiguration der API für ein Gerät")
+
+![Kalender-Verknüpfung eines Geräts](/Screenshots/Kalender-Konfiguration-Smartmatix-Virtual-Devices.jpg "Kalender-Verknüpfung eines Geräts")
+
 ---
 
 ## Voraussetzungen
@@ -35,7 +38,7 @@ Ein Plugin für die **Homematic IP Home Control Unit (HCU)**, das es ermöglicht
 | Voraussetzung | Version |
 |---|---|
 | Node.js | ≥ 18 |
-| HCU-Firmware | ≥ 1.5.16 |
+| HCU-Firmware | ≥ 1.7.9 |
 | Entwicklermodus | aktiviert (HCUWeb) |
 | Freigegebener Port | 8744/tcp (Backup & Wiederherstellung) |
 | Freigegebener Port | 8745/tcp (Daten-Endpunkte) |
@@ -72,7 +75,6 @@ smartmatix-virtual-devices/
     ├── devicesStore.js               ← Persistenz für Geräte
     ├── configStore.js                ← Persistenz für Konfiguration
     ├── backup-plugin-data.js         ← Backup & Wiederherstellung von /data
-    ├── hcu-plugin-updater.js         ← Update-Check gegen das Git-Repository
     ├── dataEndpoint.js               ← Daten-Endpunkte der virtuellen Geräte
     ├── mappings.js                   ← Zuordnungsregeln: Speicherung und Auswertung
     ├── outbound.js                   ← Versand der ausgehenden GET-Aufrufe
@@ -488,18 +490,6 @@ Die Sitzung ist jeweils **10 Minuten** gültig; Token und URL werden pro Sitzung
 
 ---
 
-## Update-Check
-
-Beim Verbindungsaufbau und anschließend alle 24 Stunden fragt das Plugin das neueste
-Release bzw. Tag des GitHub-Repositories ab. Ist dort eine neuere Version hinterlegt,
-erscheint eine schließbare Benachrichtigung in der Homematic IP App.
-
-Verglichen wird die `version` aus der `package.json` mit dem Release-Tag (Semantic Versioning,
-ein führendes `v` wird toleriert). Der Check ist rein informativ – es wird nichts automatisch
-installiert oder verändert.
-
----
-
 ## Kalendersteuerung
 
 Jedes Gerät arbeitet in einer von zwei Betriebsarten, umschaltbar oben auf der
@@ -564,7 +554,7 @@ Die Auswahl umfasst die europäischen Zonen von Lissabon bis Moskau sowie UTC.
 ### Abruf
 
 Der Kalender wird **einmal täglich** zur eingestellten Stunde abgerufen; dabei
-wird ein Zeitfenster von 36 Stunden geladen. Zusätzlich gibt es den Knopf
+wird ein Zeitfenster von einem Jahr (366 Tage) geladen. Zusätzlich gibt es den Knopf
 **Jetzt abrufen**, der die Einstellungen speichert, den Feed sofort holt und
 unmittelbar anwendet.
 

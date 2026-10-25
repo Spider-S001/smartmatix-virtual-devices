@@ -19,7 +19,6 @@ Ein Plugin für die **Homematic IP Home Control Unit (HCU)**, das es ermöglicht
 - **Automatische Wiederverbindung** – Exponential Backoff bei Verbindungsabbruch
 - **Gerät neu einbinden** – verlorene Geräte können über die `reincludeDevices`-Einstellung erneut an die HCU gemeldet werden
 - **Backup & Wiederherstellung** – Variablen und Einstellungen direkt aus der HCUWeb als JSON sichern und wieder einspielen
-- **Automatischer Update-Check** – prüft täglich auf neue Releases und meldet sie als Benachrichtigung in der Homematic IP App
 - **Daten-Endpunkt je Gerät** – pro virtuellem Gerät eine eigene, passwortgeschützte Schnittstelle mit fester Adresse
 - **Datenzuordnung** – externe Werte per Regel auf Homematic IP Attribute abbilden, mit vollständigem Feature-Katalog der Connect API
 - **Ausgehende Aufrufe** – bei Zustandsänderungen eines Geräts eine frei wählbare Adresse per GET aufrufen
@@ -39,7 +38,7 @@ Ein Plugin für die **Homematic IP Home Control Unit (HCU)**, das es ermöglicht
 | Voraussetzung | Version |
 |---|---|
 | Node.js | ≥ 18 |
-| HCU-Firmware | ≥ 1.5.16 |
+| HCU-Firmware | ≥ 1.7.9 |
 | Entwicklermodus | aktiviert (HCUWeb) |
 | Freigegebener Port | 8744/tcp (Backup & Wiederherstellung) |
 | Freigegebener Port | 8745/tcp (Daten-Endpunkte) |
@@ -56,6 +55,7 @@ smartmatix-virtual-devices/
 ├── LICENSE
 ├── constants/
 │   ├── device_constants.js           ← Gerätetypen & Pflicht-Attribute
+│   ├── timezones.js                  ← Auswahlliste der europäischen Zeitzonen
 │   └── feature_catalog.js           ← vollständiger Feature-Katalog der Connect API
 ├── lang/
 │   └── localization.json             ← alle Übersetzungen (de / en)
@@ -75,7 +75,6 @@ smartmatix-virtual-devices/
     ├── devicesStore.js               ← Persistenz für Geräte
     ├── configStore.js                ← Persistenz für Konfiguration
     ├── backup-plugin-data.js         ← Backup & Wiederherstellung von /data
-    ├── hcu-plugin-updater.js         ← Update-Check gegen das Git-Repository
     ├── dataEndpoint.js               ← Daten-Endpunkte der virtuellen Geräte
     ├── mappings.js                   ← Zuordnungsregeln: Speicherung und Auswertung
     ├── outbound.js                   ← Versand der ausgehenden GET-Aufrufe
@@ -222,6 +221,9 @@ Plugin                                  HCU
 | Einstellung | Beschreibung |
 |---|---|
 | **Geräte neu einbinden** | Wenn aktiv, werden beim nächsten Discover alle Geräte erneut an die HCU gemeldet – auch bereits eingebundene |
+| **Zeitzone** | Ortszeit für die Auswertung von Kalenderterminen, siehe [Zeitzone](#zeitzone) |
+| **Tägliche Terminübersicht** | Sendet zur eingestellten Uhrzeit eine Benachrichtigung mit den Terminen des Tages, siehe [Tägliche Terminübersicht](#tägliche-terminübersicht) |
+| **Uhrzeit der Terminübersicht** | Uhrzeit (`HH:MM`) für die tägliche Terminübersicht |
 | **Variable N** | Name des virtuellen Geräts |
 | **Variable N: Geräteart** | Typ des Geräts (Dropdown) |
 | **Variable N: Standard-Status** | Initialwert des Geräts |
@@ -488,18 +490,6 @@ Die Sitzung ist jeweils **10 Minuten** gültig; Token und URL werden pro Sitzung
 
 ---
 
-## Update-Check
-
-Beim Verbindungsaufbau und anschließend alle 24 Stunden fragt das Plugin das neueste
-Release bzw. Tag des GitHub-Repositories ab. Ist dort eine neuere Version hinterlegt,
-erscheint eine schließbare Benachrichtigung in der Homematic IP App.
-
-Verglichen wird die `version` aus der `package.json` mit dem Release-Tag (Semantic Versioning,
-ein führendes `v` wird toleriert). Der Check ist rein informativ – es wird nichts automatisch
-installiert oder verändert.
-
----
-
 ## Kalendersteuerung
 
 Jedes Gerät arbeitet in einer von zwei Betriebsarten, umschaltbar oben auf der
@@ -547,10 +537,24 @@ Mit einem **Stichwort** lässt sich einschränken, welche Termine auslösen: nur
 Termine, deren Titel den Text enthält, Groß- und Kleinschreibung wird ignoriert.
 Ohne Stichwort löst jeder Termin aus.
 
+### Zeitzone
+
+Die HCU führt ihre Container in **UTC**. Ohne passende Einstellung legt das
+Plugin die Ortszeiten eines Kalenders als UTC aus – ein Termin um 10:00 Uhr
+tritt dann in Mitteleuropa erst um 12:00 Uhr ein.
+
+Die Zeitzone wird deshalb in der allgemeinen Gruppe der Plugin-Einstellungen
+gewählt, Vorgabe ist `Europe/Berlin`. Gesetzt wird sie über `process.env.TZ`;
+damit rechnet Node sämtliche Datumsoperationen in dieser Zone, einschließlich
+der Sommerzeit. Eine eigene Umrechnung entfällt, und die Umstellung greift
+sofort ohne Neustart – die Termine werden danach automatisch neu geladen.
+
+Die Auswahl umfasst die europäischen Zonen von Lissabon bis Moskau sowie UTC.
+
 ### Abruf
 
 Der Kalender wird **einmal täglich** zur eingestellten Stunde abgerufen; dabei
-wird ein Zeitfenster von 36 Stunden geladen. Zusätzlich gibt es den Knopf
+wird ein Zeitfenster von einem Jahr (366 Tage) geladen. Zusätzlich gibt es den Knopf
 **Jetzt abrufen**, der die Einstellungen speichert, den Feed sofort holt und
 unmittelbar anwendet.
 
@@ -563,20 +567,45 @@ Abruf.
 | Bereich | Umfang |
 |---|---|
 | Termine | `VEVENT` mit `DTSTART` und `DTEND` oder `DURATION`, ganztägig über `VALUE=DATE` |
-| Wiederholungen | `FREQ=DAILY/WEEKLY/MONTHLY/YEARLY` mit `INTERVAL`, `BYDAY`, `BYMONTHDAY`, `BYMONTH`, `COUNT`, `UNTIL` |
+| Wiederholungen | `FREQ=DAILY/WEEKLY/MONTHLY/YEARLY` mit `INTERVAL`, `BYDAY`, `BYMONTHDAY`, `BYMONTH`, `BYSETPOS`, `COUNT`, `UNTIL` |
+| Auswahl in der Periode | `BYSETPOS` und negative Angaben wie `BYDAY=-1FR` oder `BYMONTHDAY=-1` |
 | Ausnahmen | einzelne Termine über `EXDATE` gelöscht, über `RECURRENCE-ID` geändert |
 | Zeiten | UTC (`Z`) sowie Ortszeit; `TZID` wird als Ortszeit des Containers ausgelegt |
 | Format | umbrochene Zeilen und maskierte Zeichen nach RFC 5545 |
 
-Nicht ausgewertet werden `BYSETPOS`, `BYWEEKNO` und `BYYEARDAY` – Regeln wie
-„jeder dritte Donnerstag im Monat". Solche Termine werden übersprungen und im
+Nicht ausgewertet werden `BYWEEKNO` und `BYYEARDAY`. Solche Regeln werden im
 Log vermerkt.
+
+> „Jeder dritte Donnerstag im Monat" schreiben Kalender auf zwei Arten:
+> `BYDAY=3TH` oder `BYDAY=TH;BYSETPOS=3`. Beide werden ausgewertet. Ohne
+> `BYSETPOS` löste die zweite Form an **jedem** Donnerstag aus – der Termin käme
+> also bis zu drei Wochen zu früh.
 
 ### Zustand
 
 Der laufende Termin und der gesicherte Wert liegen in `data/calendar-state.json`.
 Dadurch übersteht ein laufender Termin einen Neustart des Plugins: Der gesicherte
 Wert bleibt erhalten und wird am Terminende korrekt zurückgeschrieben.
+
+### Tägliche Terminübersicht
+
+In der allgemeinen Gruppe der Plugin-Einstellungen lässt sich eine tägliche
+Benachrichtigung in der Homematic IP App aktivieren (**Tägliche
+Terminübersicht**) und eine Uhrzeit dafür festlegen (**Uhrzeit der
+Terminübersicht**, Format `HH:MM`). Es gilt die oben eingestellte Zeitzone.
+
+Zur eingestellten Uhrzeit prüft das Plugin, ob an diesem Tag – über alle
+Geräte mit aktivierter Kalendersteuerung hinweg – Termine bzw. Schaltzeiten
+anstehen (inklusive Vor-/Nachlauf). Nur wenn das der Fall ist, wird eine
+**dismissable** Benachrichtigung gesendet; sie listet je Zeile Gerät, Termin
+und Zeitraum (bzw. „ganztägig") auf, chronologisch sortiert und bei sehr
+vielen Terminen auf die ersten 15 begrenzt (Rest als „+N weitere").
+
+Die Benachrichtigung nutzt eine feste Kennung und ersetzt sich dadurch beim
+nächsten Tag selbst, statt sich in der App anzuhäufen. Ohne anstehende
+Termine bleibt sie ganz aus. Ein verpasster Prüfzeitpunkt (z. B. weil das
+Plugin zu diesem Zeitpunkt neu startete) wird beim nächsten Durchlauf
+nachgeholt, statt einen ganzen Tag zu warten.
 
 ---
 
@@ -654,6 +683,79 @@ könnte eine von außen erreichbare Kalenderadresse auf Dienste im Heimnetz zeig
 **TLS-Zertifikate** werden bei öffentlichen Zielen geprüft. Nur im privaten
 Adressbereich wird darauf verzichtet, weil Geräte im Heimnetz üblicherweise
 selbstsignierte Zertifikate verwenden.
+
+### Zentrale Konfigurationsseite
+
+Sobald mindestens ein Gerät einen aktiven Endpunkt hat, erscheinen in der
+allgemeinen Gruppe der Plugin-Einstellungen ein eigenes Passwort und der Link
+**Zur zentralen Konfiguration**. Dort lassen sich alle Geräte über eine
+Geräteauswahl nacheinander einstellen, ohne für jedes Gerät die eigene Seite
+mit eigenem Passwort zu öffnen.
+
+Es gibt **nur diese eine** Konfigurationsseite. Die Kennung eines Geräts dient
+ausschließlich der Datenanlieferung und liefert keine Seite mehr aus.
+
+| Zugangsdatum | Wofür | Wo abzulesen |
+|---|---|---|
+| Passwort der Sammelseite | Anmeldung an der Konfigurationsseite, gilt für alle Geräte | Plugin-Einstellungen, Gruppe *Allgemein* |
+| Passwort eines Geräts | ausschließlich die Datenanlieferung an dessen Endpunkt | Konfigurationsseite, in der Anlieferungsadresse |
+
+In den Plugin-Einstellungen steht bei einer Variablen nur noch die Checkbox
+*Daten-Endpunkt aktivieren*. Betriebsart, Passwort und Zuordnungen gehören auf
+die Konfigurationsseite; die Anlieferungsadresse dort enthält das Passwort
+bereits, ein zweiter Ort zum Ablesen macht die Einstellungsseite nur
+unübersichtlich.
+
+Die Gruppe *Allgemein* enthält damit vier Einträge: Geräte zwischenspeichern,
+Zeitzone, Passwort der Sammelseite und den Link dorthin.
+
+### Belastung von Netz und Datenträger
+
+Mehrere Geräte teilen sich häufig einen Kalender. Jede Adresse wird deshalb je
+Abrufzyklus **einmal** geladen und das Ergebnis an alle Geräte verteilt, die sie
+verwenden; das Stichwort filtert danach je Gerät. Ohne das entstünde ein Abruf
+pro Gerät.
+
+`mappings.json` und `calendar-state.json` werden im Arbeitsspeicher gehalten und
+nur bei einer Änderung des Zeitstempels neu gelesen. Geschrieben wird
+ausschließlich bei tatsächlichen Wertänderungen – ein `CONTROL_REQUEST` oder eine
+Datenanlieferung mit unverändertem Wert erzeugt weder Schreibvorgang noch
+`STATUS_EVENT`. Ausgehende Aufrufe werden erst geprüft, wenn für das Gerät
+überhaupt eine Zieladresse hinterlegt ist.
+
+Gemessen mit 20 Geräten an einem gemeinsamen Kalender über 24 Stunden:
+
+| Vorgang | vorher | jetzt |
+|---|---|---|
+| Kalenderabrufe | 20 je Zyklus | 1 je Zyklus |
+| Lesevorgänge durch den Zeitgeber | 59.040 pro Tag | 0 |
+| 20× derselbe Schaltbefehl | 20 Schreibvorgänge | 0 |
+
+Der verbleibende Aufwand ist proportional zu den echten Zustandsänderungen, nicht
+zur Laufzeit.
+
+### Lesbare Bezeichnungen
+
+Gerätearten und Attribute erscheinen überall mit sprechendem Namen statt der
+technischen Kennung:
+
+| Technisch | Anzeige |
+|---|---|
+| `WINDOW_COVERING` | Rollladen/Jalousie (Position) |
+| `HEAT_PUMP` | Wärmepumpe (Betriebsart) |
+| `setPointTemperature.setPointTemperature` | Solltemperatur |
+| `maintenance.lowBat` | Batterie schwach |
+
+Gespeichert wird weiterhin die technische Kennung, damit Regeln unabhängig von
+der eingestellten Sprache gültig bleiben. Beim Anlegen eines Geräts wird der im
+Dropdown gewählte Anzeigename in allen verfügbaren Sprachen zurückübersetzt; ein
+direkt eingetragener technischer Name funktioniert weiterhin.
+
+Die Zugänge der einzelnen Geräte bleiben unverändert bestehen; ein
+Geräte-Token gilt weiterhin ausschließlich für sein eigenes Gerät und kann die
+Geräteliste nicht abrufen. Kennung und Passwort der Sammelseite liegen in der
+`config.json` und bleiben damit über Neustarts hinweg gleich. Wird der letzte
+Endpunkt abgeschaltet, verschwindet der Zugang.
 
 ### Passwort wechseln
 
