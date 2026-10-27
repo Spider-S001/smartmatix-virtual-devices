@@ -25,11 +25,9 @@ Ein Plugin für die **Homematic IP Home Control Unit (HCU)**, das es ermöglicht
 - **Kalendersteuerung** – Geräte alternativ über einen Google-, Outlook- oder iCal-Kalender schalten
 - **Zweisprachig** – Einstellungsmenü und Konfigurationsseite auf Deutsch und Englisch, gesteuert über den Sprachcode der HCU
 
-![Die Auswahl der Gerätetypen im Plugin](/Screenshots/Geraeteauswahl.png "Die Auswahl der Gerätetypen im Plugin")
+![Die Konfiguration des Plugins selbst](/Screenshots/Plugin-Konfiguration.jpg "Die Konfiguration im Plugin")
 
-![Die Konfiguration der API für ein Gerät](/Screenshots/API-Konfiguration-Smartmatix-Virtual-Devices.jpg "Die Konfiguration der API für ein Gerät")
-
-![Kalender-Verknüpfung eines Geräts](/Screenshots/Kalender-Konfiguration-Smartmatix-Virtual-Devices.jpg "Kalender-Verknüpfung eines Geräts")
+![Die Konfiguration eines virtuell angelegten Geräts](/Screenshots/Plugin-Settings.jpg "Die Konfiguration einer Variable")
 
 ---
 
@@ -38,7 +36,7 @@ Ein Plugin für die **Homematic IP Home Control Unit (HCU)**, das es ermöglicht
 | Voraussetzung | Version |
 |---|---|
 | Node.js | ≥ 18 |
-| HCU-Firmware | ≥ 1.7.9 |
+| HCU-Firmware | ≥ 1.8.10 |
 | Entwicklermodus | aktiviert (HCUWeb) |
 | Freigegebener Port | 8744/tcp (Backup & Wiederherstellung) |
 | Freigegebener Port | 8745/tcp (Daten-Endpunkte) |
@@ -227,7 +225,7 @@ Plugin                                  HCU
 | **Variable N** | Name des virtuellen Geräts |
 | **Variable N: Geräteart** | Typ des Geräts (Dropdown) |
 | **Variable N: Standard-Status** | Initialwert des Geräts |
-| **Neue Variable** | Name + Typ für ein neues Gerät – nach dem Speichern erscheint es sofort in der HCU |
+| **Neue Variable** | Name + Typ für ein oder mehrere neue Geräte (Anzahl wählbar, alle Felder untereinander als „Variable 1: …“, „Variable 2: …“) – nach dem Speichern erscheinen sie sofort in der HCU |
 | **Variable N: Daten-Endpunkt aktivieren** | Legt beim Speichern Endpunkt-ID und Passwort an; danach erscheinen Passwort und Konfigurationslink in derselben Gruppe |
 | **Backup & Wiederherstellung → Aktion** | `Backup starten` erzeugt einen einmaligen Download-Link, `Wiederherstellung starten` einen Token samt Upload-Seite |
 

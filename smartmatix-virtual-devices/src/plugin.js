@@ -46,8 +46,8 @@ const BACKUP_PORT = 8744;
 // Port des dauerhaften Endpunkt-Webservers (dataEndpoint.js).
 const ENDPOINT_PORT = 8745;
 
-// Sortierposition der Backup-Gruppe im Einstellungsmenü
-const BACKUP_GROUP_ORDER = 997;
+// Sortierposition der Backup-Gruppe im Einstellungsmenü (direkt nach "Allgemein")
+const BACKUP_GROUP_ORDER = 2;
 
 // Abstand der Sortiernummern zwischen zwei Variablen-Gruppen.
 const VARIABLE_ORDER_STEP = 10;
@@ -490,7 +490,7 @@ class Plugin {
     const deviceList = devices.getAll();
     const VALID_TYPES = Object.keys(DEVICE_FEATURES);
 
-    // Anzahl der Abschnitte zum Anlegen neuer Geraete
+    // Anzahl der Variablen, die gleichzeitig angelegt werden
     const wantedSlots = parseInt(properties?.new_variable_count, 10);
     if (Number.isFinite(wantedSlots) && wantedSlots >= 1 && wantedSlots <= MAX_NEW_SLOTS
         && wantedSlots !== this._newSlotCount()) {
@@ -1806,30 +1806,36 @@ class Plugin {
         },
       };
 
+      // Reihenfolge: Allgemein, Backup, neue Variablen, bestehende Geräte.
+      // Alle neuen Variablen stehen gemeinsam in einer Gruppe.
+      groups.new_variable = {
+        friendlyName: this._newSlotCount() === 1
+          ? this._t('group.new_variable.name')
+          : this._t('group.new_variable.name_plural'),
+        description:  this._t('group.new_variable.description'),
+        order:        BACKUP_GROUP_ORDER + 1,
+      };
+
       // Existierende Geräte durchgehen und Gruppen dafür generieren
       const deviceListForNames = devices.getAll();
 
       for(let i = 0; i < varCount; i++) {
-        let num  = i + 1;
+        const num = i + 1;
         const dev = deviceListForNames[i];
         const nm  = dev?.friendlyName;
-        groups[`variable_${num}`] = {
-          friendlyName: nm
-            ? this._t('group.variable.name', { num, name: nm, type: this._deviceTypeName(dev.deviceType) })
-            : this._t('group.variable.unnamed', { num }),
-          description:  this._t('group.variable.description', { name: nm ?? '' }),
-          order:        2 + i,
-        };
-      }
 
-      const newSlots = this._newSlotCount();
-      for (let i = 1; i <= newSlots; i++) {
-        groups[`new_variable_${i}`] = {
-          friendlyName: newSlots === 1
-            ? this._t('group.new_variable.name')
-            : this._t('group.new_variable.numbered', { n: i, total: newSlots }),
-          description:  this._t('group.new_variable.description'),
-          order:        varCount + 1 + i,
+        // Ohne Namen: laufende Nummer und Gerätetyp ohne Klammerzusatz
+        const typeLabel = dev?.deviceType
+          ? this._deviceTypeName(dev.deviceType).replace(/\s*\([^)]*\)\s*$/, '')
+          : '';
+        const unnamed = typeLabel
+          ? this._t('group.variable.unnamedTyped', { num, type: typeLabel })
+          : this._t('group.variable.unnamed', { num });
+
+        groups[`variable_${num}`] = {
+          friendlyName: nm ? this._t('group.variable.name', { name: nm }) : unnamed,
+          description:  this._t('group.variable.description', { name: nm ?? '' }),
+          order:        BACKUP_GROUP_ORDER + 2 + i,
         };
       }
 
@@ -2003,57 +2009,49 @@ class Plugin {
       this._addEndpointFields(properties, device, num, orderBase);
     });
 
-    // Leeres Feld am Ende ergänzen (Neue Variable)
-    let orderBaseLast = deviceListLength * VARIABLE_ORDER_STEP;
+    // Felder für neue Variablen: alle in einer Gruppe, die Anzahl steht oben
+    const orderBaseLast = deviceListLength * VARIABLE_ORDER_STEP;
+    const slots         = this._newSlotCount();
 
-    const slots = this._newSlotCount();
+    properties.new_variable_count = {
+      friendlyName: this._t('settings.new_variable.count.label'),
+      description:  this._t('settings.new_variable.count.description'),
+      dataType:     'ENUM',
+      required:     'false',
+      groupId:      'new_variable',
+      order:        orderBaseLast,
+      values:       Array.from({ length: MAX_NEW_SLOTS }, (_, i) => String(i + 1)),
+      defaultValue: '1',
+      currentValue: String(slots),
+    };
 
     for (let i = 1; i <= slots; i++) {
-      const slotBase = orderBaseLast + (i - 1) * 3;
+      const slotBase = orderBaseLast + i * 2 - 1;
 
       properties[`new_variable_${i}`] = {
-        friendlyName:  slots === 1
-          ? this._t('settings.new_variable.name.label')
-          : this._t('settings.new_variable.name.slot'),
-        description:   this._t('settings.new_variable.name.description',
-          { num: deviceListLength + i - 1 }),
+        friendlyName:  this._t('settings.new_variable.name.label', { num: i }),
+        description:   this._t('settings.new_variable.name.description', { num: i }),
         dataType:      'STRING',
         required:      'false',
-        groupId:       `new_variable_${i}`,
-        order:         slotBase + 1,
+        groupId:       'new_variable',
+        order:         slotBase,
         minimumLength: 0,
         maximumLength: 255,
         currentValue:  '',
       };
 
       properties[`new_variable_${i}_type`] = {
-        friendlyName: slots === 1
-          ? this._t('settings.new_variable.type.label')
-          : this._t('settings.new_variable.type.slot'),
-        description:  this._t('settings.new_variable.type.description',
-          { num: deviceListLength + i - 1 }),
+        friendlyName: this._t('settings.new_variable.type.label', { num: i }),
+        description:  this._t('settings.new_variable.type.description', { num: i }),
         dataType:     'ENUM',
         required:     'false',
-        groupId:      `new_variable_${i}`,
-        order:        slotBase + 2,
+        groupId:      'new_variable',
+        order:        slotBase + 1,
         values:       DEVICE_TYPES.map((type) => this._deviceTypeName(type)),
         defaultValue: this._deviceTypeName('LIGHT'),
         currentValue: this._deviceTypeName('LIGHT'),
       };
     }
-
-    // Anzahl der Abschnitte, im letzten Abschnitt platziert
-    properties.new_variable_count = {
-      friendlyName: this._t('settings.new_variable.count.label'),
-      description:  this._t('settings.new_variable.count.description'),
-      dataType:     'ENUM',
-      required:     'false',
-      groupId:      `new_variable_${slots}`,
-      order:        orderBaseLast + (slots - 1) * 3 + 3,
-      values:       Array.from({ length: MAX_NEW_SLOTS }, (_, i) => String(i + 1)),
-      defaultValue: '1',
-      currentValue: String(slots),
-    };
 
     // --- Backup & Wiederherstellung (Dropdown bzw. Token/Link) ---
     this._addBackupRestoreFields(properties);
